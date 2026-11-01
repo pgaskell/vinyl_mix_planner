@@ -66,7 +66,9 @@ std::string setToJson(const Set& set)
                          {"in", c.inFrame},
                          {"out", c.outFrame},
                          {"pitchSteps", c.pitchSteps},
-                         {"pitchMoves", moves}});
+                         {"pitchMoves", moves},
+                         {"mixer",
+                          {{"fader", c.mixer.fader}, {"high", c.mixer.high}, {"mid", c.mixer.mid}, {"low", c.mixer.low}}}});
     }
 
     const json doc = {{"format", kFormatName},
@@ -132,6 +134,9 @@ Set setFromJson(const std::string& text)
             for (const auto& m : c.at("pitchMoves"))
                 clip.pitchMoves.push_back({m.at("frame").get<int64_t>(), m.at("duration").get<double>(),
                                            m.at("pitchSteps").get<int>()});
+            const auto& mixer = c.at("mixer");
+            clip.mixer = {mixer.at("fader").get<double>(), mixer.at("high").get<double>(),
+                          mixer.at("mid").get<double>(), mixer.at("low").get<double>()};
             set.clips.push_back(std::move(clip));
         }
 

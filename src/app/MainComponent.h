@@ -1,20 +1,24 @@
 #pragma once
 
-#include "app/DeckStrip.h"
-#include "app/TrackLoader.h"
+#include "app/AudioPool.h"
+#include "app/Inspector.h"
+#include "app/IssuesPanel.h"
+#include "app/LibraryPanel.h"
+#include "app/TimelineView.h"
+#include "core/Document.h"
 #include "engine/Engine.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_utils/juce_audio_utils.h>
-
-#include <array>
-#include <memory>
+#include <juce_gui_extra/juce_gui_extra.h>
 
 namespace vmp
 {
 
-// Phase 0 prototype window: decks, output mode and routing, and a MIDI monitor.
 class MainComponent : public juce::Component,
+                      public juce::DragAndDropContainer,
+                      public juce::ApplicationCommandTarget,
+                      public juce::MenuBarModel,
                       private juce::AudioIODeviceCallback,
                       private juce::MidiInputCallback,
                       private juce::ChangeListener,
@@ -24,8 +28,22 @@ public:
     explicit MainComponent(juce::PropertiesFile& settings);
     ~MainComponent() override;
 
+    // Offers to save unsaved changes, then runs `then` unless the user cancels.
+    void confirmDiscard(std::function<void()> then);
+
     void paint(juce::Graphics& g) override;
     void resized() override;
+
+    // ApplicationCommandTarget
+    juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+    void getAllCommands(juce::Array<juce::CommandID>& commands) override;
+    void getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo& info) override;
+    bool perform(const InvocationInfo& info) override;
+
+    // MenuBarModel
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override;
+    void menuItemSelected(int itemId, int menuIndex) override;
 
 private:
     // Audio thread.
@@ -39,32 +57,65 @@ private:
     void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message) override;
 
     // Message thread.
-    void changeListenerCallback(juce::ChangeBroadcaster*) override;
+    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void timerCallback() override;
-    void showAudioSettings();
-    void refreshDeviceInfo();
-    void setNumDecks(int count);
+
+    void documentChanged();
+    void rebuildSchedule();
+    void updateTitle();
+    void updateDeviceInfo();
+
+    std::optional<double> addFile(const juce::File& file, int deck, double start);
+    void addFileAtPlayhead(const juce::File& file);
+    void nudgeSelected(double seconds);
+    void changeSelectedPitch(int steps);
+
+    void newSet();
+    void openSet();
+    void openSetFile(const juce::File& file);
+    void save(bool chooseFile, std::function<void()> onSaved = {});
+    bool writeSet(const juce::File& file);
+    void showError(const juce::String& title, const juce::String& message);
+
     void setOutputMode(OutputMode mode);
-    void restoreSettings();
-    void saveRoutingSettings();
+    void restoreRouting();
+    void saveRouting();
+    struct OutputPair
+    {
+        int firstChannel;
+        juce::String name;
+        bool enabled;
+    };
+    std::vector<OutputPair> outputPairs();
 
     juce::PropertiesFile& settings_;
-    Engine engine_;
-    TrackLoader loader_;
-    juce::AudioDeviceManager deviceManager_;
-    juce::AudioThumbnailCache thumbnailCache_{8};
+    SetDocument document_;
+    juce::File file_;
+    uint64_t seenRevision_ = ~uint64_t{0};
 
-    juce::TextButton settingsButton_{"Audio / MIDI settings..."};
-    juce::Label deviceLabel_;
-    juce::Label modeLabel_{{}, "Mode"};
-    juce::ComboBox modeBox_;
-    juce::Label deckCountLabel_{{}, "Decks"};
-    juce::ComboBox deckCountBox_;
-    juce::Label masterLabel_{{}, "Master out"};
-    juce::ComboBox masterBox_;
-    std::array<std::unique_ptr<DeckStrip>, Engine::kMaxDecks> decks_;
-    juce::Label midiTitle_{{}, "MIDI monitor"};
+    Engine engine_;
+    AudioPool pool_;
+    juce::AudioDeviceManager deviceManager_;
+    juce::ApplicationCommandManager commands_;
+
+    TimelineView timeline_;
+    Inspector inspector_;
+    LibraryPanel library_;
+    IssuesPanel issues_;
     juce::TextEditor midiLog_;
+    juce::TabbedComponent bottomTabs_{juce::TabbedButtonBar::TabsAtTop};
+
+    juce::TextButton playButton_{"Play"};
+    juce::Label timeLabel_;
+    juce::TextButton zoomOutButton_{"-"}, zoomInButton_{"+"}, zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
+        zoomTransitionButton_{"Transition"};
+    juce::ToggleButton followButton_{"Follow"};
+    juce::ComboBox modeBox_, decksBox_;
+    juce::TextButton settingsButton_{"Audio..."};
+    juce::Label deviceLabel_;
+
+    juce::ScopedMessageBox messageBox_;
+    std::unique_ptr<juce::FileChooser> chooser_;
 
     juce::CriticalSection midiLock_;
     juce::StringArray pendingMidi_; // guarded by midiLock_

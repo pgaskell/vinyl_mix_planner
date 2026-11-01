@@ -11,135 +11,75 @@ using Catch::Approx;
 
 namespace
 {
-// Deck with an instant motor, running a 1 kHz tone.
-void setUpRunningDeck(Deck& deck, double fileRate, double deviceRate, int pitchSteps)
+constexpr int kBlock = 512;
+
+// Plays a track at a constant speed from `position` (source frames), returning the left channel.
+std::vector<float> play(Deck& deck, const TrackAudio& track, double& position, double speed, double deviceRate,
+                        int frames)
 {
-    deck.prepare(deviceRate, 512);
-    deck.setMotorTimes(0.0, 0.0);
-    deck.setTrack(makeSine(1000.0, fileRate, 4.0));
-    deck.setPitchSteps(pitchSteps);
-    deck.setRunning(true);
+    std::vector<float> left(static_cast<size_t>(frames)), right(static_cast<size_t>(frames));
+    const double framesPerOutput = speed * track.sampleRate / deviceRate;
+    for (int done = 0; done < frames; done += kBlock)
+    {
+        const int n = std::min(kBlock, frames - done);
+        const double end = position + n * framesPerOutput;
+        deck.render(&track, position, end, left.data() + done, right.data() + done, n);
+        position = end;
+    }
+    return left;
 }
 
-double measuredFrequency(Deck& deck, double deviceRate)
+double frequencyAt(double speed, double fileRate, double deviceRate)
 {
-    renderDeck(deck, static_cast<int>(0.1 * deviceRate)); // let the resampler settle
-    return measureFrequency(renderDeck(deck, static_cast<int>(deviceRate)), deviceRate);
+    Deck deck;
+    deck.prepare(deviceRate, kBlock);
+    const auto track = makeSine(1000.0, fileRate, 4.0);
+    double position = 0.0;
+    play(deck, *track, position, speed, deviceRate, static_cast<int>(0.1 * deviceRate)); // settle
+    return measureFrequency(play(deck, *track, position, speed, deviceRate, static_cast<int>(deviceRate)),
+                            deviceRate);
 }
 } // namespace
 
-TEST_CASE("Deck at 0% plays at the source pitch")
+TEST_CASE("Deck speed changes pitch like varispeed")
 {
-    Deck deck;
-    setUpRunningDeck(deck, 48000.0, 48000.0, 0);
-    CHECK(measuredFrequency(deck, 48000.0) == Approx(1000.0).epsilon(1e-3));
-}
-
-TEST_CASE("Pitch fader changes frequency like varispeed")
-{
-    Deck deck;
-    SECTION("+8%")
-    {
-        setUpRunningDeck(deck, 48000.0, 48000.0, 160);
-        CHECK(measuredFrequency(deck, 48000.0) == Approx(1080.0).epsilon(1e-3));
-    }
-    SECTION("-8%")
-    {
-        setUpRunningDeck(deck, 48000.0, 48000.0, -160);
-        CHECK(measuredFrequency(deck, 48000.0) == Approx(920.0).epsilon(1e-3));
-    }
-    SECTION("+0.05%, the smallest step")
-    {
-        setUpRunningDeck(deck, 48000.0, 48000.0, 1);
-        CHECK(measuredFrequency(deck, 48000.0) == Approx(1000.5).epsilon(1e-4));
-    }
+    CHECK(frequencyAt(1.0, 48000.0, 48000.0) == Approx(1000.0).epsilon(1e-3));
+    CHECK(frequencyAt(1.08, 48000.0, 48000.0) == Approx(1080.0).epsilon(1e-3));
+    CHECK(frequencyAt(0.92, 48000.0, 48000.0) == Approx(920.0).epsilon(1e-3));
+    CHECK(frequencyAt(1.0005, 48000.0, 48000.0) == Approx(1000.5).epsilon(1e-4)); // smallest step
 }
 
 TEST_CASE("File and device sample rates may differ")
 {
-    Deck deck;
-    SECTION("44.1 kHz file on a 48 kHz device")
-    {
-        setUpRunningDeck(deck, 44100.0, 48000.0, 0);
-        CHECK(measuredFrequency(deck, 48000.0) == Approx(1000.0).epsilon(1e-3));
-    }
-    SECTION("44.1 kHz file on a 96 kHz device at +4%")
-    {
-        setUpRunningDeck(deck, 44100.0, 96000.0, 80);
-        CHECK(measuredFrequency(deck, 96000.0) == Approx(1040.0).epsilon(1e-3));
-    }
+    CHECK(frequencyAt(1.0, 44100.0, 48000.0) == Approx(1000.0).epsilon(1e-3));
+    CHECK(frequencyAt(1.04, 44100.0, 96000.0) == Approx(1040.0).epsilon(1e-3));
 }
 
-TEST_CASE("Position advances in source frames at the pitched speed")
+TEST_CASE("A jump or a different track restarts playback at the requested frame")
 {
     Deck deck;
-    setUpRunningDeck(deck, 44100.0, 48000.0, 160);
-    renderDeck(deck, 48000);
-    // One second at +8% consumes 1.08 s of source, give or take resampler look-ahead.
-    CHECK(static_cast<double>(deck.positionFrames()) == Approx(1.08 * 44100.0).margin(200.0));
+    deck.prepare(48000.0, kBlock);
+    const auto low = makeSine(500.0, 48000.0, 4.0);
+    const auto high = makeSine(2000.0, 48000.0, 4.0);
+
+    double position = 0.0;
+    play(deck, *low, position, 1.0, 48000.0, 4800);
+
+    position = 48000.0; // another track, mid-way
+    play(deck, *high, position, 1.0, 48000.0, 1024);
+    CHECK(measureFrequency(play(deck, *high, position, 1.0, 48000.0, 9600), 48000.0) == Approx(2000.0).epsilon(1e-3));
+
+    position = 10.0; // jump back on the same track
+    play(deck, *high, position, 1.0, 48000.0, 1024);
+    CHECK(measureFrequency(play(deck, *high, position, 1.0, 48000.0, 9600), 48000.0) == Approx(2000.0).epsilon(1e-3));
 }
 
-TEST_CASE("A stopped deck is silent and does not advance")
+TEST_CASE("Playing past the end of the track gives silence")
 {
     Deck deck;
-    setUpRunningDeck(deck, 48000.0, 48000.0, 0);
-    deck.setRunning(false);
-    const auto out = renderDeck(deck, 4800);
-    CHECK(deck.positionFrames() == 0);
-    for (float s : out)
-        REQUIRE(s == 0.0f);
-}
-
-TEST_CASE("Motor start is gradual")
-{
-    Deck deck;
-    deck.prepare(48000.0, 512);
-    deck.setMotorTimes(0.7, 0.5);
-    deck.setTrack(makeSine(1000.0, 48000.0, 4.0));
-    deck.setRunning(true);
-    renderDeck(deck, 16800); // 0.35 s: half way up, so ~0.0875 s of source consumed
-    CHECK(static_cast<double>(deck.positionFrames()) == Approx(0.0875 * 48000.0).margin(600.0));
-}
-
-TEST_CASE("Seek moves the needle")
-{
-    Deck deck;
-    setUpRunningDeck(deck, 48000.0, 48000.0, 0);
-    deck.seek(96000);
-    renderDeck(deck, 512);
-    CHECK(deck.positionFrames() >= 96000);
-    CHECK(deck.positionFrames() < 96000 + 2048);
-}
-
-TEST_CASE("Running off the end of the record gives silence")
-{
-    Deck deck;
-    deck.prepare(48000.0, 512);
-    deck.setMotorTimes(0.0, 0.0);
-    deck.setTrack(makeSine(1000.0, 48000.0, 0.5));
-    deck.setRunning(true);
-    renderDeck(deck, 48000);
-    const auto tail = renderDeck(deck, 4800);
-    for (float s : tail)
-        REQUIRE(s == 0.0f);
-}
-
-TEST_CASE("Loading a new track restarts from the top and frees the old one")
-{
-    Deck deck;
-    setUpRunningDeck(deck, 48000.0, 48000.0, 0);
-    renderDeck(deck, 48000);
-    REQUIRE(deck.positionFrames() > 40000);
-
-    deck.setTrack(makeSine(500.0, 48000.0, 4.0));
-    renderDeck(deck, 512);
-    CHECK(deck.positionFrames() < 2048);
-    deck.collectGarbage();
-
-    // A further swap must not stall behind the freed retired slot.
-    deck.setTrack(makeSine(250.0, 48000.0, 4.0));
-    renderDeck(deck, 4800);
-    deck.collectGarbage();
-    renderDeck(deck, 4800);
-    CHECK(measuredFrequency(deck, 48000.0) == Approx(250.0).epsilon(1e-3));
+    deck.prepare(48000.0, kBlock);
+    const auto track = makeSine(1000.0, 48000.0, 0.5);
+    double position = 0.0;
+    play(deck, *track, position, 1.0, 48000.0, 24000 + 2048);
+    CHECK(peak(play(deck, *track, position, 1.0, 48000.0, 4800)) == 0.0f);
 }

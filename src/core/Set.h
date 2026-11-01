@@ -48,6 +48,19 @@ struct PitchMove
     bool operator==(const PitchMove&) const = default;
 };
 
+// Mixer channel controls, stored as positions (0..1) as on the hardware rather than as gains.
+// The mixer model decides what a position sounds like, so a set planned with one mixer can be
+// played back through another. EQ knobs: 0.5 is the centre detent.
+struct ChannelSettings
+{
+    double fader = 1.0;
+    double high = 0.5;
+    double mid = 0.5;
+    double low = 0.5;
+
+    bool operator==(const ChannelSettings&) const = default;
+};
+
 // A track played on a deck: needle drop at inFrame at timeline time startSeconds, played until
 // outFrame (needle up or fader closed).
 struct Clip
@@ -60,6 +73,7 @@ struct Clip
     int64_t outFrame = 0;
     int pitchSteps = 0; // fader position at the needle drop
     std::vector<PitchMove> pitchMoves;
+    ChannelSettings mixer; // channel settings when the clip starts
 
     bool operator==(const Clip&) const = default;
 };

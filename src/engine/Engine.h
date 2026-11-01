@@ -1,6 +1,9 @@
 #pragma once
 
 #include "engine/Deck.h"
+#include "engine/MixerChannel.h"
+#include "engine/RtHandoff.h"
+#include "engine/Schedule.h"
 
 #include <array>
 #include <atomic>
@@ -12,26 +15,29 @@ namespace vmp
 
 enum class OutputMode
 {
-    InternalMix, // decks summed through the internal mixer to one stereo pair (laptop use)
+    InternalMix, // decks through the internal mixer, summed to one stereo pair (laptop use)
     DirectOut    // each deck dry to its own stereo pair, mixing done on a hardware mixer
 };
 
-// Owns the decks and routes them to device outputs. Knows nothing about JUCE: the host passes a
-// map from physical device channel to the index in the buffer array the driver hands us, because
-// drivers only hand over the channels that are enabled.
+// Plays the set's schedule: deck N plays lane N. Knows nothing about JUCE: the host passes a
+// map from physical device channel to the index in the buffer array the driver hands us,
+// because drivers only hand over the channels that are enabled.
 class Engine
 {
 public:
-    static constexpr int kMaxDecks = 4;
     static constexpr int kNoOutput = -1;
 
     Engine();
 
-    Deck& deck(int index) { return *decks_[static_cast<size_t>(index)]; }
-    int numDecks() const { return numDecks_.load(); }
-    void setNumDecks(int count);
+    // --- Message thread, lock-free -----------------------------------------
+    void setSchedule(std::unique_ptr<Schedule> schedule) { schedule_.set(std::move(schedule)); }
 
-    // --- Controls (message thread, lock-free) ------------------------------
+    void play() { playing_.store(true); }
+    void pause() { playing_.store(false); }
+    bool isPlaying() const { return playing_.load(); }
+    void seek(double timelineSeconds) { seekRequest_.store(timelineSeconds); }
+    double playheadSeconds() const { return playhead_.load(); }
+
     void setOutputMode(OutputMode mode) { mode_.store(mode); }
     OutputMode outputMode() const { return mode_.load(); }
 
@@ -41,11 +47,8 @@ public:
     void setMasterOutput(int firstPhysicalChannel) { masterOutput_.store(firstPhysicalChannel); }
     int masterOutput() const { return masterOutput_.load(); }
 
-    // Linear gain for the internal mixer's channel fader. Ignored in DirectOut mode.
-    void setChannelGain(int deckIndex, float gain);
-
-    // Message thread housekeeping: frees tracks the audio thread has finished with.
-    void collectGarbage();
+    // Frees schedules the audio thread has finished with.
+    void collectGarbage() { schedule_.collectGarbage(); }
 
     // --- Non-real-time -----------------------------------------------------
     // physicalToBuffer[ch] is the buffer index for physical output ch, or -1 if disabled.
@@ -55,19 +58,27 @@ public:
     void render(float* const* outputs, int numOutputs, int numFrames);
 
 private:
-    void renderChunk(float* const* outputs, int numOutputs, int offset, int numFrames);
+    void renderChunk(const Schedule* schedule, bool playing, float* const* outputs, int numOutputs, int offset,
+                     int numFrames);
+    void renderLane(const std::vector<ScheduledClip>& lane, size_t deck, double start, int numFrames);
     float* outputFor(float* const* outputs, int numOutputs, int physicalChannel) const;
 
-    std::array<std::unique_ptr<Deck>, kMaxDecks> decks_;
-    std::atomic<int> numDecks_{2};
+    RtHandoff<Schedule> schedule_;
+    std::atomic<bool> playing_{false};
+    std::atomic<double> seekRequest_;
+    std::atomic<double> playhead_{0.0}; // published once per block
     std::atomic<OutputMode> mode_{OutputMode::InternalMix};
     std::array<std::atomic<int>, kMaxDecks> deckOutputs_;
     std::atomic<int> masterOutput_{0};
-    std::array<std::atomic<float>, kMaxDecks> gains_;
 
     // Audio thread state.
+    std::array<std::unique_ptr<Deck>, kMaxDecks> decks_;
+    std::array<MixerChannel, kMaxDecks> channels_;
+    std::array<ChannelSettings, kMaxDecks> laneMixer_; // settings of the clip last heard on each lane
+    double sampleRate_ = 48000.0;
+    double position_ = 0.0;
+    float transportGain_ = 0.0f; // fades in on play and out on pause, to avoid clicks
     std::vector<int> physicalToBuffer_;
-    std::array<float, kMaxDecks> appliedGains_{};
     std::array<std::vector<float>, kMaxDecks> deckLeft_, deckRight_;
     std::vector<float> mixLeft_, mixRight_;
     int maxBlock_ = 0;

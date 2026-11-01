@@ -31,9 +31,12 @@ set(VMP_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor)
 # --- Core: set model, timing math, file format; no JUCE dependency ----------
 
 add_library(vmp_core STATIC
+    src/core/Document.cpp
+    src/core/Edits.cpp
     src/core/PitchCurve.cpp
     src/core/Set.cpp
-    src/core/SetFile.cpp)
+    src/core/SetFile.cpp
+    src/core/Waveform.cpp)
 target_include_directories(vmp_core PUBLIC src)
 target_link_libraries(vmp_core PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(vmp_core PRIVATE ${VMP_WARNINGS})
@@ -42,7 +45,9 @@ target_compile_options(vmp_core PRIVATE ${VMP_WARNINGS})
 
 add_library(vmp_engine STATIC
     src/engine/Deck.cpp
-    src/engine/Engine.cpp)
+    src/engine/Engine.cpp
+    src/engine/MixerChannel.cpp
+    src/engine/Schedule.cpp)
 target_link_libraries(vmp_engine PUBLIC vmp_core SampleRate::samplerate)
 target_compile_options(vmp_engine PRIVATE ${VMP_WARNINGS})
 
@@ -56,10 +61,13 @@ juce_add_gui_app(VinylMixPlanner
     NEEDS_CURL FALSE)
 
 target_sources(VinylMixPlanner PRIVATE
+    src/app/AudioPool.cpp
+    src/app/Inspector.cpp
+    src/app/IssuesPanel.cpp
+    src/app/LibraryPanel.cpp
     src/app/Main.cpp
     src/app/MainComponent.cpp
-    src/app/DeckStrip.cpp
-    src/app/TrackLoader.cpp)
+    src/app/TimelineView.cpp)
 
 target_compile_definitions(VinylMixPlanner PRIVATE
     JUCE_WEB_BROWSER=0
@@ -88,13 +96,16 @@ if(VMP_BUILD_TESTS)
     include(Catch)
 
     add_executable(vmp_tests
-        tests/PitchTests.cpp
-        tests/PitchCurveTests.cpp
-        tests/SetTests.cpp
-        tests/SetFileTests.cpp
-        tests/MotorTests.cpp
         tests/DeckTests.cpp
-        tests/EngineTests.cpp)
+        tests/EditsTests.cpp
+        tests/EngineTests.cpp
+        tests/MixerChannelTests.cpp
+        tests/MotorTests.cpp
+        tests/PitchCurveTests.cpp
+        tests/PitchTests.cpp
+        tests/SetFileTests.cpp
+        tests/SetTests.cpp
+        tests/WaveformTests.cpp)
     target_link_libraries(vmp_tests PRIVATE vmp_engine Catch2::Catch2WithMain)
     target_compile_options(vmp_tests PRIVATE ${VMP_WARNINGS})
     catch_discover_tests(vmp_tests)

@@ -58,6 +58,10 @@ DJM-900NXS2, and generic Core Audio devices).
 - Store positions in source-file frames, not seconds after pitch. Timeline is in seconds; no tempo grid.
 - Pitch moves are anchored to source frames (the music), not timeline time, so trims keep them on the bar.
 - `ClipTiming` is the only place that maps timeline <-> source; UI and engine must both use it.
+- All set changes go through `SetDocument::edit` with an `edit::` function (undo = whole-set snapshots;
+  wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.
+- Mixer settings are stored as knob/fader positions (0..1), never gains: the mixer model maps them.
+- Known limitation: all track audio is decoded into memory (float). Long sets need disk streaming.
 - Drivers only pass enabled channels: always route through the physical->buffer map.
 
 ## Building on this machine

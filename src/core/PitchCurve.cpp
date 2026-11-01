@@ -37,7 +37,7 @@ PitchCurve::PitchCurve(int baseSteps, std::vector<Move> moves)
         const double hold = (move.sourceSeconds - x) / speed;
         if (hold > 0.0)
         {
-            segments_.push_back({t, hold, speed, speed, x});
+            segments_.push_back({t, hold, speed, speed, x, 0.0});
             t += hold;
             x = move.sourceSeconds;
         }
@@ -45,14 +45,14 @@ PitchCurve::PitchCurve(int baseSteps, std::vector<Move> moves)
         const double target = speedFromPitchSteps(move.targetSteps);
         if (move.durationSeconds > 0.0)
         {
-            segments_.push_back({t, move.durationSeconds, speed, target, x});
+            segments_.push_back({t, move.durationSeconds, speed, target, x, (target - speed) / move.durationSeconds});
             x += move.durationSeconds * (speed + target) / 2.0;
             t += move.durationSeconds;
         }
         speed = target;
     }
 
-    segments_.push_back({t, kInfinity, speed, speed, x});
+    segments_.push_back({t, kInfinity, speed, speed, x, 0.0});
 }
 
 const PitchCurve::Segment& PitchCurve::segmentAtTime(double t) const
@@ -74,7 +74,7 @@ double PitchCurve::speedAt(double t) const
     if (t < 0.0)
         return segments_.front().s0;
     const auto& seg = segmentAtTime(t);
-    return seg.s0 + seg.acceleration() * (t - seg.t0);
+    return seg.s0 + seg.acceleration * (t - seg.t0);
 }
 
 double PitchCurve::sourceSecondsAt(double t) const
@@ -84,7 +84,7 @@ double PitchCurve::sourceSecondsAt(double t) const
         return segments_.front().s0 * t;
     const auto& seg = segmentAtTime(t);
     const double u = t - seg.t0;
-    return seg.x0 + seg.s0 * u + 0.5 * seg.acceleration() * u * u;
+    return seg.x0 + seg.s0 * u + 0.5 * seg.acceleration * u * u;
 }
 
 double PitchCurve::timeAtSourceSeconds(double x) const
@@ -95,7 +95,7 @@ double PitchCurve::timeAtSourceSeconds(double x) const
     const double y = x - seg.x0;
     // Root of 0.5*a*u^2 + s0*u - y = 0, in the form that stays stable as a -> 0.
     // Speed never goes below 0.92, so the denominator is always well away from zero.
-    const double u = 2.0 * y / (seg.s0 + std::sqrt(seg.s0 * seg.s0 + 2.0 * seg.acceleration() * y));
+    const double u = 2.0 * y / (seg.s0 + std::sqrt(seg.s0 * seg.s0 + 2.0 * seg.acceleration * y));
     return seg.t0 + std::min(u, seg.duration);
 }
 

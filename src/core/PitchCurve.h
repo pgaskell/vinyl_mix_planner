@@ -39,7 +39,7 @@ private:
         double duration; // infinite for the final hold
         double s0, s1;   // speed at start and end (equal for a hold)
         double x0;       // source position at t0
-        double acceleration() const { return s1 == s0 ? 0.0 : (s1 - s0) / duration; }
+        double acceleration; // (s1 - s0) / duration; 0 for a hold
     };
 
     const Segment& segmentAtTime(double t) const;

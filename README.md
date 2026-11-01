@@ -5,8 +5,10 @@ Plan vinyl DJ sets from audio files, limited to what a Technics SL-1200MK2 can a
 Up to 4 decks. Plays through the laptop's own output, or one stereo pair per deck into a
 hardware mixer (DJM-900NXS2 / DJM-900SRT or any multichannel Core Audio interface).
 
-**Status:** phase 1 (set data model, no UI yet) on top of the phase 0 prototype. Decks load files, play with pitch, motor start/stop and routing
-in both output modes, plus a MIDI monitor for the mixer. No timeline, library, EQ or effects yet.
+**Status:** early but usable. Timeline with one lane per deck: drop files from Finder or the
+library, move and trim clips, set each clip's starting pitch, fader and EQ, play back through
+the laptop or a hardware mixer, save and open sets, undo. No beat detection, pitch-move editing,
+mixer automation, effects or bounce yet.
 
 ## Building (macOS, Apple Silicon)
 
@@ -49,8 +51,8 @@ separate CMake project, which doesn't inherit cache variables.
 
 | Path | What |
 |---|---|
-| `src/core/` | Set model (tracks, clips, pitch moves), timeline/source timing math, validation against what 1200s can do, `.vmpset` JSON file format. No JUCE. |
-| `src/engine/` | Real-time audio engine: decks, resampling, routing. No JUCE, fully unit tested. |
+| `src/core/` | Set model, timeline/source timing math, edits with undo, validation against what 1200s can do, waveform peaks, `.vmpset` file format. No JUCE. |
+| `src/engine/` | Real-time engine: plays the set's schedule through decks (resampling) and a basic mixer, routes outputs. No JUCE. |
 | `src/app/` | JUCE application: UI, device and MIDI handling, file decoding. |
 | `tests/` | Catch2 unit tests for core and engine. |
 | `external/` | Submodules: JUCE 9.0.4, libsamplerate 0.2.2, nlohmann/json 3.12.0, Catch2 3.16.1. |

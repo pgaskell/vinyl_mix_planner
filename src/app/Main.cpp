@@ -12,14 +12,20 @@ public:
         : DocumentWindow(name, juce::Colour(0xff1b1d21), DocumentWindow::allButtons)
     {
         setUsingNativeTitleBar(true);
-        setContentOwned(new MainComponent(settings), true);
+        content_ = new MainComponent(settings);
+        setContentOwned(content_, true);
         setResizable(true, true);
-        setResizeLimits(800, 500, 4000, 3000);
+        setResizeLimits(1000, 600, 6000, 4000);
         centreWithSize(getWidth(), getHeight());
         setVisible(true);
     }
 
+    MainComponent& content() { return *content_; }
+
     void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+
+private:
+    MainComponent* content_; // owned by the window
 };
 
 class Application : public juce::JUCEApplication
@@ -47,7 +53,14 @@ public:
         properties_.saveIfNeeded();
     }
 
-    void systemRequestedQuit() override { quit(); }
+    // Window close and Cmd+Q both come here: offer to save first.
+    void systemRequestedQuit() override
+    {
+        if (window_ == nullptr)
+            quit();
+        else
+            window_->content().confirmDiscard([] { juce::JUCEApplication::quit(); });
+    }
 
 private:
     juce::ApplicationProperties properties_;

@@ -29,6 +29,7 @@ Set makeSet()
     clip.outFrame = 15000000;
     clip.pitchSteps = -37;
     clip.pitchMoves = {{2000000, 7.5, 12}, {3000000, 0.0, -160}};
+    clip.mixer = {0.8, 0.0, 0.5, 0.6125};
     set.clips.push_back(clip);
 
     set.nextId = 4;
