@@ -196,12 +196,15 @@ void TimelineView::updatePlayhead()
         return;
     playhead_ = now;
 
+    // Following keeps the playhead in the centre and scrolls the tracks past it. After scrolling
+    // away, following resumes when the playhead reaches the centre of the view being looked at,
+    // so the hand-back doesn't jump.
     const double span = laneWidth() / pixelsPerSecond_;
-    const bool visible = playhead_ >= viewStart_ && playhead_ <= viewStart_ + span * 0.95;
-    if (followSuspended_ && visible)
-        followSuspended_ = false; // the playhead has caught up with where the user is looking
-    if (follow_ && !followSuspended_ && engine_.isPlaying() && drag_ == Drag::None && !visible)
-        viewStart_ = playhead_ - span * 0.1;
+    const double centre = viewStart_ + span / 2.0;
+    if (followSuspended_ && playhead_ >= centre && playhead_ <= viewStart_ + span)
+        followSuspended_ = false;
+    if (following() && drag_ == Drag::None)
+        viewStart_ = playhead_ - span / 2.0;
     repaint();
 }
 
@@ -288,21 +291,20 @@ void TimelineView::showPlayhead()
 {
     followSuspended_ = false;
     const double span = laneWidth() / pixelsPerSecond_;
-    setView(playhead_ - span * 0.25, pixelsPerSecond_);
+    setView(playhead_ - span / 2.0, pixelsPerSecond_);
 }
 
 void TimelineView::zoomIn()
 {
     const double span = laneWidth() / pixelsPerSecond_;
     const bool playheadVisible = playhead_ >= viewStart_ && playhead_ <= viewStart_ + span;
-    zoomAround(2.0, playheadVisible ? playhead_ : viewStart_ + span / 2.0);
+    zoomAround(2.0, following() || playheadVisible ? playhead_ : viewStart_ + span / 2.0);
 }
 
 void TimelineView::zoomOut()
 {
-    navigatedByHand();
     const double span = laneWidth() / pixelsPerSecond_;
-    zoomAround(0.5, viewStart_ + span / 2.0);
+    zoomAround(0.5, following() ? playhead_ : viewStart_ + span / 2.0);
 }
 
 void TimelineView::zoomToSet()
@@ -975,21 +977,21 @@ void TimelineView::mouseDoubleClick(const juce::MouseEvent& e)
 
 void TimelineView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
-    navigatedByHand();
     if (e.mods.isCommandDown() || e.mods.isCtrlDown())
     {
-        zoomAround(std::pow(2.0, wheel.deltaY * 4.0), xToTime(e.x));
+        // While following, zoom around the playhead and keep following.
+        zoomAround(std::pow(2.0, wheel.deltaY * 4.0), following() ? playhead_ : xToTime(e.x));
         return;
     }
     // Lanes fit the window, so both scroll directions pan through time.
+    navigatedByHand();
     const double pixels = (wheel.deltaX + wheel.deltaY) * 300.0;
     setView(viewStart_ - pixels / pixelsPerSecond_, pixelsPerSecond_);
 }
 
 void TimelineView::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
 {
-    navigatedByHand();
-    zoomAround(scaleFactor, xToTime(e.x));
+    zoomAround(scaleFactor, following() ? playhead_ : xToTime(e.x));
 }
 
 // --- Drag and drop ----------------------------------------------------------
