@@ -1,65 +1,39 @@
 # Vinyl Mix Planner
 
-Plan vinyl DJ sets from audio files, limited to what a Technics SL-1200MK2 can actually do:
-±8% pitch on a 0.05% grid, with tempo and key moving together (no time-stretching).
-Up to 4 decks. Plays through the laptop's own output, or one stereo pair per deck into a
-hardware mixer (DJM-900NXS2 / DJM-900SRT or any multichannel Core Audio interface).
+Plan vinyl DJ sets on your laptop before you play them on real turntables.
 
-**Status:** early but usable. Timeline with one lane per deck and 3-band waveforms: drop files
-from Finder or the library, move and trim clips, set each clip's pitch, fader and EQ, nudge by
-ear while playing, see beat lines and the key after pitch (standard or Camelot), play back
-through the laptop or a hardware mixer, save and open sets, undo. Pitch, volume and EQ
-automation with keypoints; a channel strip per deck; transport with beat jumps and mix-to-mix
-navigation. Keyboard shortcuts are editable (Edit > Keyboard Shortcuts). No effects, MIDI
-recording or bounce yet.
+![Vinyl Mix Planner](docs/images/screenshot.png)
 
-## Building (macOS, Apple Silicon)
+Load the tracks you own on vinyl as audio files, lay them out on two to four decks, and work
+out the mix: where each record drops in, how far to move the pitch fader, and what to do with
+the EQ and volume through each transition. The app only lets you do what a Technics SL-1200MK2
+can do: ±8% pitch, with tempo and key moving together like a real record. A mix that works
+here will work on the decks.
 
-Requirements: Xcode or the Command Line Tools, CMake ≥ 3.22, Ninja.
+## What it does
+
+- A timeline with a lane per deck, 3-band waveforms and beat lines for matching by eye
+- Pitch, nudge and EQ by ear while the mix plays, the way you would on the decks
+- Tempo and key detection, with the key shown after pitch in standard or Camelot notation
+- Automation for pitch, volume and EQ through each transition
+- Plays through your laptop, or one deck per channel into a club mixer (e.g. Pioneer DJM-900)
+- Checks for things you can't do live, like two records on one deck or no time to change records
+
+Still to come: DJM-900 mixer and effects emulation, recording mixer moves over MIDI, and
+exporting the mix to an audio file.
+
+## Building
+
+macOS on Apple Silicon, with Xcode, CMake and Ninja installed:
 
 ```sh
-git clone --recursive <repo-url>
+git clone --recursive https://github.com/pgaskell/vinyl_mix_planner.git
 cd vinyl_mix_planner
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug
-open "build/debug/VinylMixPlanner_artefacts/Debug/Vinyl Mix Planner.app"
+cmake --preset release && cmake --build --preset release
 ```
 
-If you already cloned without `--recursive`: `git submodule update --init --recursive`.
-
-The `release` preset builds a universal (arm64 + x86_64) binary. The minimum macOS version is 11.
-
-### Machine-specific toolchain fixes
-
-Put local overrides in `CMakeUserPresets.json`, which git ignores. For example, if the
-Command Line Tools' newest SDK doesn't match their linker, point at an older SDK:
-
-```json
-{
-  "version": 6,
-  "configurePresets": [{
-    "name": "local-debug", "inherits": "debug", "binaryDir": "${sourceDir}/build/debug",
-    "environment": { "SDKROOT": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk" }
-  }],
-  "buildPresets": [{ "name": "local-debug", "configurePreset": "local-debug" }],
-  "testPresets": [{ "name": "local-debug", "configurePreset": "local-debug" }]
-}
-```
-
-Use `SDKROOT` rather than `CMAKE_OSX_SYSROOT`: JUCE configures its `juceaide` helper as a
-separate CMake project, which doesn't inherit cache variables.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `src/core/` | Set model, timeline/source timing math, edits with undo, validation against what 1200s can do, waveform peaks, `.vmpset` file format. No JUCE. |
-| `src/engine/` | Real-time engine: plays the set's schedule through decks (resampling) and a basic mixer, routes outputs. No JUCE. |
-| `src/app/` | JUCE application: UI, device and MIDI handling, file decoding. |
-| `tests/` | Catch2 unit tests for core and engine. |
-| `external/` | Submodules: JUCE 9.0.4, libsamplerate 0.2.2, nlohmann/json 3.12.0, Catch2 3.16.1. |
+The app is built to `build/release/VinylMixPlanner_artefacts/Release/`.
 
 ## License
 
-AGPL-3.0-or-later (see `LICENSE`), which matches JUCE's open-source license.
+AGPL-3.0. Built with [JUCE](https://juce.com).
