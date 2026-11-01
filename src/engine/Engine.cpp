@@ -18,6 +18,21 @@ int64_t steadyNanoseconds()
         .count();
 }
 
+// Raises each side's peak to its loudest sample. Only the audio thread raises them, so a plain
+// load and store is enough; the reader resets them with exchange().
+void notePeak(std::array<std::atomic<float>, 2>& peak, const float* left, const float* right, int numFrames)
+{
+    float loudest[2] = {0.0f, 0.0f};
+    for (int i = 0; i < numFrames; ++i)
+    {
+        loudest[0] = std::max(loudest[0], std::abs(left[i]));
+        loudest[1] = std::max(loudest[1], std::abs(right[i]));
+    }
+    for (size_t side = 0; side < 2; ++side)
+        if (loudest[side] > peak[side].load(std::memory_order_relaxed))
+            peak[side].store(loudest[side], std::memory_order_relaxed);
+}
+
 void addInto(float* dest, const float* src, int numFrames)
 {
     if (dest != nullptr)
@@ -259,6 +274,7 @@ void Engine::renderChunk(const Schedule* schedule, bool playing, float* const* o
         renderLane(schedule->lanes[d], d, position_, numFrames);
         if (!direct)
             channels_[d].process(laneMixer_[d], deckLeft_[d].data(), deckRight_[d].data(), numFrames);
+        notePeak(deckPeaks_[d], deckLeft_[d].data(), deckRight_[d].data(), numFrames);
     }
 
     auto out = [&](int physical) {
@@ -288,6 +304,7 @@ void Engine::renderChunk(const Schedule* schedule, bool playing, float* const* o
                 mixLeft_[i] += deckLeft_[d][i];
                 mixRight_[i] += deckRight_[d][i];
             }
+        notePeak(masterPeak_, mixLeft_.data(), mixRight_.data(), numFrames);
         const int master = masterOutput_.load();
         if (master != kNoOutput)
         {

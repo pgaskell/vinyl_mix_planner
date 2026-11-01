@@ -25,6 +25,7 @@ private:
     void paintListBoxItem(int row, juce::Graphics& g, int width, int height, bool selected) override;
     void listBoxItemClicked(int row, const juce::MouseEvent&) override;
 
+    const juce::Font rowFont_{juce::FontOptions(13.0f)};
     juce::ListBox list_{"Issues", this};
     std::vector<Issue> issues_;
 };

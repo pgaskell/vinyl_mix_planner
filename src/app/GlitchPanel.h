@@ -46,6 +46,7 @@ private:
     void listBoxItemClicked(int row, const juce::MouseEvent&) override;
     void changed();
 
+    const juce::Font rowFont_{juce::FontOptions(13.0f)};
     juce::ListBox list_{"Glitches", this};
     juce::TextButton clearButton_{"Clear"};
     juce::Label summary_;
@@ -67,6 +68,7 @@ public:
     void paintButton(juce::Graphics& g, bool highlighted, bool down) override;
 
 private:
+    const juce::Font rowFont_{juce::FontOptions(13.0f)};
     int count_ = 0;
     double flashedAt_ = -1.0e9; // ms
     float flash_ = 0.0f;

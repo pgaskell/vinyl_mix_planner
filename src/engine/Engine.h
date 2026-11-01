@@ -14,6 +14,11 @@
 namespace vmp
 {
 
+struct StereoPeak
+{
+    float left = 0.0f, right = 0.0f; // 1.0 = full scale
+};
+
 enum class OutputMode
 {
     InternalMix, // decks through the internal mixer, summed to one stereo pair (laptop use)
@@ -71,6 +76,17 @@ public:
     // The largest fraction of a block's duration spent rendering it, since the last call.
     float takePeakLoad() { return peakLoad_.exchange(0.0f); }
 
+    // Peak levels since the last call: each deck as it leaves its channel (after fader and EQ; dry
+    // in direct out), and the internal mix (silent in direct out).
+    StereoPeak takeDeckPeak(int deck)
+    {
+        if (deck < 0 || deck >= kMaxDecks)
+            return {};
+        auto& peak = deckPeaks_[static_cast<size_t>(deck)];
+        return {peak[0].exchange(0.0f), peak[1].exchange(0.0f)};
+    }
+    StereoPeak takeMasterPeak() { return {masterPeak_[0].exchange(0.0f), masterPeak_[1].exchange(0.0f)}; }
+
     // Replaces the clock used to time blocks (nanoseconds), for tests. Not real-time safe to change
     // while running.
     using Clock = int64_t (*)();
@@ -100,6 +116,8 @@ private:
     SpscQueue<Glitch, 256> glitches_;
     std::atomic<uint64_t> renderCounter_{0};
     std::atomic<float> peakLoad_{0.0f};
+    std::array<std::array<std::atomic<float>, 2>, kMaxDecks> deckPeaks_{};
+    std::array<std::atomic<float>, 2> masterPeak_{};
     Clock clock_;
 
     // Audio thread state.

@@ -300,3 +300,31 @@ TEST_CASE("Volume automation fades a deck in the internal mix")
     CHECK(out[0][static_cast<size_t>(1.5 * kRate)] == Approx(0.25f * MixerChannel::faderGain(0.5)).margin(0.01f));
     CHECK(std::abs(out[0][static_cast<size_t>(2.2 * kRate)]) < 0.001f);
 }
+
+TEST_CASE("Meters report each side of each deck and of the mix, then start again")
+{
+    Fixture f;
+    f.addClip(makeConstant(0.25f, kRate, 10.0), 0, 0.0);
+    auto loudRight = makeConstant(0.1f, kRate, 10.0);
+    for (size_t i = 1; i < loudRight->interleaved.size(); i += 2)
+        loudRight->interleaved[i] = -0.5f;
+    f.addClip(loudRight, 1, 0.0);
+    f.publish();
+    f.engine.play();
+    f.run(0.5);
+    // The resampler rings a few percent at the instant the records start.
+    const auto deck0 = f.engine.takeDeckPeak(0), deck1 = f.engine.takeDeckPeak(1), mix = f.engine.takeMasterPeak();
+    CHECK(deck0.left == Approx(0.25f).epsilon(0.08));
+    CHECK(deck0.right == Approx(0.25f).epsilon(0.08));
+    CHECK(deck1.left == Approx(0.1f).epsilon(0.08));
+    CHECK(deck1.right == Approx(0.5f).epsilon(0.08));
+    CHECK(mix.left == Approx(0.35f).epsilon(0.08));
+    CHECK(mix.right == Approx(0.25f).epsilon(0.08)); // 0.25 - 0.5
+    CHECK(f.engine.takeDeckPeak(0).left == 0.0f);
+    CHECK(f.engine.takeMasterPeak().right == 0.0f);
+
+    f.engine.setOutputMode(OutputMode::DirectOut);
+    f.run(0.1);
+    CHECK(f.engine.takeDeckPeak(1).right == Approx(0.5f).epsilon(0.08));
+    CHECK(f.engine.takeMasterPeak().left == 0.0f); // no internal mix
+}

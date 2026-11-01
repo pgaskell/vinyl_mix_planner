@@ -1,21 +1,5 @@
 # To do
 
-## Interface
-
-- **Icons on common buttons.** Use the usual symbols instead of text where there is one:
-  transport (previous mix, rewind, play/pause, stop, fast forward, next mix), zoom in/out,
-  follow, nudge, and pitch up/down/reset. Keep text where no symbol is widely understood
-  (Mix, Clip, Transition, Beats), and keep the shortcut in each button's tooltip.
-
-- **VU meters.** A level meter per deck channel and for the master output, with peak hold and
-  a clip light, so you can match levels through a transition and see when the mix overloads.
-
-- **Resizable library panel.** Drag the edge between the folder list and the timeline to widen
-  it and see long file names; remember the width.
-- **Beat lines across decks.** Optionally draw one record's beat lines (bars, 4-bar and 16-bar
-  marks) faintly through the other lanes, so lining up a third or fourth deck against it is easy
-  by eye. Probably follows the selected clip, with a toggle.
-
 ## Beat grid
 
 - **Bar resets within a track.** Many records are built in 4-bar phrases but slip in an extra bar
@@ -57,7 +41,6 @@
   with a COLOR knob per channel.
 - Record mixer moves (faders, EQ, FX) over MIDI into the automation.
 - Export the mix to an audio file (WAV, AIFF, FLAC).
-- Decode cache: a setting for its size limit (fixed at 10 GB) and a button to clear it.
 - Sign and notarise the app so it opens without the security warning.
 
 ## Before a public release: drop backwards compatibility

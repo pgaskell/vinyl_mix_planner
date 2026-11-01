@@ -21,7 +21,7 @@ void IssuesPanel::paintListBoxItem(int row, juce::Graphics& g, int width, int he
 {
     if (selected)
         g.fillAll(juce::Colour(0xff3a3e45));
-    g.setFont(juce::FontOptions(13.0f));
+    g.setFont(rowFont_);
 
     if (issues_.empty())
     {

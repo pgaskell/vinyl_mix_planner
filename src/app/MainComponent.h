@@ -5,10 +5,12 @@
 #include "app/Display.h"
 #include "app/DriverDropouts.h"
 #include "app/GlitchPanel.h"
+#include "app/IconButton.h"
 #include "app/Inspector.h"
 #include "app/IssuesPanel.h"
 #include "app/LibraryPanel.h"
 #include "app/MixerPanel.h"
+#include "app/SplitterBar.h"
 #include "app/TimelineView.h"
 #include "core/Document.h"
 #include "engine/Engine.h"
@@ -133,17 +135,21 @@ private:
     Inspector inspector_;
     MixerPanel mixer_;
     LibraryPanel library_;
+    SplitterBar libraryEdge_;
+    int libraryWidth_ = 220;
+    int libraryWidthAtDragStart_ = 220;
     IssuesPanel issues_;
     GlitchPanel glitches_;
     juce::TextEditor midiLog_;
     juce::TabbedComponent bottomTabs_{juce::TabbedButtonBar::TabsAtTop};
 
-    juce::TextButton previousMixButton_{"|<"}, rewindButton_{"<<"}, playButton_{"Play"}, stopButton_{"Stop"},
-        forwardButton_{">>"}, nextMixButton_{">|"};
+    IconButton previousMixButton_{Icon::PreviousMix}, rewindButton_{Icon::Rewind}, playButton_{Icon::Play},
+        stopButton_{Icon::Stop}, forwardButton_{Icon::FastForward}, nextMixButton_{Icon::NextMix};
     juce::ComboBox beatJumpBox_;
     double playStartedAt_ = 0.0; // where Stop returns to
     juce::Label timeLabel_;
-    juce::TextButton zoomOutButton_{"-"}, zoomInButton_{"+"}, zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
+    IconButton zoomOutButton_{Icon::ZoomOut}, zoomInButton_{Icon::ZoomIn};
+    juce::TextButton zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
         zoomTransitionButton_{"Transition"}, zoomBeatsButton_{"Beats"};
     juce::ToggleButton followButton_{"Follow"};
     juce::ComboBox modeBox_, decksBox_;
@@ -154,6 +160,7 @@ private:
     int lastDropouts_ = 0;   // the driver's dropout count when last checked
     float peakLoad_ = 0.0f;  // engine load over the current second
     int loadTicks_ = 0;
+    double lastMeterTime_ = 0.0; // seconds
     juce::TooltipWindow tooltips_{this};
 
     juce::ScopedMessageBox messageBox_;

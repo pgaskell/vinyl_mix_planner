@@ -64,7 +64,8 @@ enum Command : juce::CommandID
     kNudgeBarsEarlier,
     kNudgeBarsLater,
     kShowPlayhead,
-    kLastCommand = kShowPlayhead
+    kToggleBeatGuides,
+    kLastCommand = kToggleBeatGuides
 };
 
 } // namespace vmp

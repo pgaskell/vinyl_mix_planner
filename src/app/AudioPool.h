@@ -46,10 +46,9 @@ public:
         bool streamed = false; // from the decode cache; otherwise held in memory
     };
 
-    // Oldest-used files beyond this are deleted from the decode cache.
-    static constexpr juce::int64 kCacheLimitBytes = juce::int64{10} << 30;
+    static constexpr juce::int64 kDefaultCacheLimitBytes = juce::int64{10} << 30;
 
-    AudioPool(AnalysisCache& cache, juce::File cacheFolder);
+    AudioPool(AnalysisCache& cache, juce::File cacheFolder, juce::int64 cacheLimitBytes = kDefaultCacheLimitBytes);
     ~AudioPool() override;
 
     juce::AudioFormatManager& formats() { return formats_; }
@@ -65,6 +64,13 @@ public:
     // Drops audio no longer used by the set.
     void retainOnly(const std::set<std::string>& paths);
 
+    // The decode cache. Least recently used files beyond the limit are deleted. Clearing it is
+    // safe while playing (open files stay readable); tracks are decoded again when next opened.
+    void setCacheLimit(juce::int64 bytes);
+    juce::int64 cacheLimit() const { return cacheLimit_.load(); }
+    juce::int64 cacheBytes() const;
+    void clearCache();
+
     // The DJ's correction if there is one, otherwise what analysis found (once loaded).
     std::optional<BeatGrid> gridFor(const Track& track) const;
     std::optional<MusicalKey> keyFor(const Track& track) const;
@@ -74,6 +80,7 @@ private:
 
     AnalysisCache& cache_;
     juce::File cacheFolder_;
+    std::atomic<juce::int64> cacheLimit_;
     juce::AudioFormatManager formats_;
     std::map<std::string, Entry> entries_;
     juce::ThreadPool pool_{2}; // declared after formats_ so jobs finish before it goes

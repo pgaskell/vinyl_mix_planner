@@ -18,6 +18,8 @@ constexpr int kMenuMasterBase = 2000; // + first channel; kMenuMasterBase + 999 
 constexpr int kMenuDeckBase = 3000;   // + deck * 100 + first channel; + 99 is "None"
 constexpr int kMenuDecksBase = 4000;  // + number of decks
 constexpr int kMenuNone = 99;
+constexpr int kMenuCacheLimitBase = 5000; // + gigabytes
+constexpr int kMenuClearCache = 5999;
 
 constexpr double kNudgeSeconds = 0.010;
 constexpr double kFineNudgeSeconds = 0.001;
@@ -32,7 +34,8 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     : settings_(settings),
       analysisCache_(settings.getFile().getSiblingFile("analysis.json")),
       pool_(analysisCache_, juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-                                .getChildFile("Library/Caches/org.vinylmixplanner.app/Audio")),
+                                .getChildFile("Library/Caches/org.vinylmixplanner.app/Audio"),
+            juce::int64{std::clamp(settings.getIntValue("decodeCacheGB", 10), 1, 1000)} << 30),
       timeline_(document_, pool_, engine_, display_),
       inspector_(document_, pool_, display_, commands_),
       mixer_(document_, pool_, display_, [this] { return engine_.playheadSeconds(); }),
@@ -55,6 +58,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
 
     // --- Panels ---
     addAndMakeVisible(timeline_);
+    timeline_.setShowsBeatGuides(settings_.getBoolValue("beatGuides", true));
     timeline_.onSelectionChanged = [this](Id id) {
         inspector_.setClip(id);
         commands_.commandStatusChanged();
@@ -66,6 +70,14 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     addAndMakeVisible(inspector_);
     addAndMakeVisible(mixer_);
     addAndMakeVisible(library_);
+    libraryWidth_ = settings_.getIntValue("libraryWidth", 220);
+    libraryEdge_.onDragStart = [this] { libraryWidthAtDragStart_ = library_.getWidth(); };
+    libraryEdge_.onDrag = [this](int deltaX) {
+        libraryWidth_ = libraryWidthAtDragStart_ + deltaX;
+        settings_.setValue("libraryWidth", libraryWidth_);
+        resized();
+    };
+    addAndMakeVisible(libraryEdge_);
     library_.onFileDoubleClicked = [this](const juce::File& file) {
         addFileAtPlayhead(file);
         timeline_.grabKeyboardFocus();
@@ -266,8 +278,17 @@ void MainComponent::timerCallback()
 
     timeline_.updatePlayhead();
     mixer_.update(timeline_.selectedClip(), engine_.playheadSeconds());
+    {
+        const double now = juce::Time::getMillisecondCounterHiRes() * 1e-3;
+        std::array<StereoPeak, kMaxDecks> decks{};
+        for (int d = 0; d < kMaxDecks; ++d)
+            decks[static_cast<size_t>(d)] = engine_.takeDeckPeak(d);
+        mixer_.pushLevels(decks, engine_.takeMasterPeak(), engine_.outputMode() == OutputMode::InternalMix,
+                          lastMeterTime_ > 0.0 ? now - lastMeterTime_ : 0.0);
+        lastMeterTime_ = now;
+    }
     timeLabel_.setText(formatTime(engine_.playheadSeconds(), true), juce::dontSendNotification);
-    playButton_.setButtonText(engine_.isPlaying() ? "Pause" : "Play");
+    playButton_.setIcon(engine_.isPlaying() ? Icon::Pause : Icon::Play);
     engine_.collectGarbage();
     collectGlitches();
 
@@ -983,6 +1004,12 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         info.setTicked(timeline_.followsPlayhead());
         key('f');
         break;
+    case kToggleBeatGuides:
+        define("Beat Lines Across Decks", "Draw the selected record's bar lines through the other decks too",
+               "View");
+        info.setTicked(timeline_.showsBeatGuides());
+        key('l');
+        break;
     case kToggleKeyNotation:
         define("Key Notation: Standard / Camelot / Both", "Change how keys are written", "View");
         key('k');
@@ -1198,6 +1225,11 @@ bool MainComponent::perform(const InvocationInfo& info)
         followButton_.setToggleState(timeline_.followsPlayhead(), juce::dontSendNotification);
         commands_.commandStatusChanged();
         break;
+    case kToggleBeatGuides:
+        timeline_.setShowsBeatGuides(!timeline_.showsBeatGuides());
+        settings_.setValue("beatGuides", timeline_.showsBeatGuides());
+        commands_.commandStatusChanged();
+        break;
     case kToggleKeyNotation:
         display_.keyNotation = static_cast<KeyNotation>((static_cast<int>(display_.keyNotation) + 1) % 3);
         settings_.setValue("keyNotation", static_cast<int>(display_.keyNotation));
@@ -1274,7 +1306,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         menu.addSeparator();
         add({kZoomIn, kZoomOut, kZoomSet, kZoomClip, kZoomTransition, kZoomBeats});
         menu.addSeparator();
-        add({kShowPlayhead, kToggleFollow, kToggleKeyNotation, kCycleAutomationView});
+        add({kShowPlayhead, kToggleFollow, kToggleBeatGuides, kToggleKeyNotation, kCycleAutomationView});
         break;
     case 5:
     {
@@ -1304,6 +1336,21 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         for (int d = 0; d < document_.set().numDecks; ++d)
             menu.addSubMenu("Deck " + juce::String(d + 1) + " Output",
                             outputMenu(kMenuDeckBase + d * 100, kMenuNone, engine_.deckOutput(d)), direct);
+        menu.addSeparator();
+
+        // Decoded audio kept on disk for streaming (~21 MB per minute of music).
+        juce::PopupMenu cache;
+        const auto limitGB = static_cast<int>(pool_.cacheLimit() >> 30);
+        for (int gb : {5, 10, 20, 50})
+            cache.addItem(kMenuCacheLimitBase + gb,
+                          "Keep up to " + juce::String(gb) + " GB (about " + juce::String(gb * 1024 / 21 / 60) +
+                              " hours of music)",
+                          true, limitGB == gb);
+        cache.addSeparator();
+        cache.addItem(kMenuClearCache, "Clear Decode Cache (" +
+                                           juce::String(static_cast<double>(pool_.cacheBytes()) / (1 << 30), 1) +
+                                           " GB used)...");
+        menu.addSubMenu("Decode Cache", cache);
         break;
     }
     default:
@@ -1332,6 +1379,27 @@ void MainComponent::menuItemSelected(int itemId, int)
         saveRouting();
         menuItemsChanged();
     }
+    else if (itemId > kMenuCacheLimitBase && itemId < kMenuClearCache)
+    {
+        const int gb = itemId - kMenuCacheLimitBase;
+        settings_.setValue("decodeCacheGB", gb);
+        pool_.setCacheLimit(juce::int64{gb} << 30);
+        menuItemsChanged();
+    }
+    else if (itemId == kMenuClearCache)
+    {
+        const auto options = juce::MessageBoxOptions()
+                                 .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                                 .withTitle("Clear the decode cache?")
+                                 .withMessage("Tracks will be decoded again the next time a set using them is "
+                                              "opened. The set that's open now keeps playing.")
+                                 .withButton("Clear")
+                                 .withButton("Cancel");
+        messageBox_ = juce::NativeMessageBox::showScopedAsync(options, [this](int result) {
+            if (result == 1)
+                pool_.clearCache();
+        });
+    }
     else if (itemId > kMenuDecksBase && itemId <= kMenuDecksBase + kMaxDecks)
     {
         const int n = itemId - kMenuDecksBase;
@@ -1355,7 +1423,7 @@ void MainComponent::resized()
 
     auto bar = area.removeFromTop(42).reduced(8, 7);
     for (auto [button, width] : {std::pair<juce::Component*, int>{&previousMixButton_, 34}, {&rewindButton_, 34},
-                                 {&playButton_, 56}, {&stopButton_, 48}, {&forwardButton_, 34}, {&nextMixButton_, 34},
+                                 {&playButton_, 44}, {&stopButton_, 34}, {&forwardButton_, 34}, {&nextMixButton_, 34},
                                  {&beatJumpBox_, 92}})
     {
         button->setBounds(bar.removeFromLeft(width));
@@ -1364,7 +1432,7 @@ void MainComponent::resized()
     bar.removeFromLeft(6);
     timeLabel_.setBounds(bar.removeFromLeft(100));
     bar.removeFromLeft(10);
-    for (auto [button, width] : {std::pair<juce::Button*, int>{&zoomOutButton_, 28}, {&zoomInButton_, 28},
+    for (auto [button, width] : {std::pair<juce::Button*, int>{&zoomOutButton_, 30}, {&zoomInButton_, 30},
                                  {&zoomSetButton_, 44}, {&zoomClipButton_, 44}, {&zoomTransitionButton_, 76},
                                  {&zoomBeatsButton_, 50}, {&followButton_, 66}})
     {
@@ -1381,7 +1449,12 @@ void MainComponent::resized()
     bar.removeFromRight(6);
     deviceLabel_.setBounds(bar);
 
-    library_.setBounds(area.removeFromLeft(220));
+    // The library can be dragged wider for long file names, leaving the timeline at least 400 px.
+    // The chosen width is kept even when the window is too small to show it.
+    const int rightWidth = std::max(250, MixerPanel::preferredWidth(document_.set().numDecks));
+    library_.setBounds(area.removeFromLeft(
+        std::clamp(libraryWidth_, 150, std::max(150, area.getWidth() - rightWidth - 400))));
+    libraryEdge_.setBounds(area.removeFromLeft(5));
     auto right = area.removeFromRight(std::max(250, MixerPanel::preferredWidth(document_.set().numDecks)));
     inspector_.setBounds(right.removeFromTop(Inspector::kPreferredHeight));
     mixer_.setBounds(right);

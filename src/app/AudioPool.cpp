@@ -113,11 +113,32 @@ std::shared_ptr<TrackAudio> decode(juce::AudioFormatManager& formats, const juce
 }
 } // namespace
 
-AudioPool::AudioPool(AnalysisCache& cache, juce::File cacheFolder) : cache_(cache), cacheFolder_(std::move(cacheFolder))
+AudioPool::AudioPool(AnalysisCache& cache, juce::File cacheFolder, juce::int64 cacheLimitBytes)
+    : cache_(cache), cacheFolder_(std::move(cacheFolder)), cacheLimit_(cacheLimitBytes)
 {
     formats_.registerBasicFormats();
     cacheFolder_.createDirectory();
-    pool_.addJob([folder = cacheFolder_] { trimCache(folder, kCacheLimitBytes); });
+    pool_.addJob([folder = cacheFolder_, limit = cacheLimitBytes] { trimCache(folder, limit); });
+}
+
+void AudioPool::setCacheLimit(juce::int64 bytes)
+{
+    cacheLimit_.store(bytes);
+    pool_.addJob([folder = cacheFolder_, bytes] { trimCache(folder, bytes); });
+}
+
+juce::int64 AudioPool::cacheBytes() const
+{
+    juce::int64 total = 0;
+    for (const auto& file : cacheFolder_.findChildFiles(juce::File::findFiles, false))
+        total += file.getSize();
+    return total;
+}
+
+void AudioPool::clearCache()
+{
+    for (const auto& file : cacheFolder_.findChildFiles(juce::File::findFiles, false))
+        file.deleteFile();
 }
 
 AudioPool::~AudioPool()
@@ -176,7 +197,7 @@ void AudioPool::request(const std::string& path)
                 audio = streamedTrack(StreamedAudio::open(audioPath));
             if (audio == nullptr)
                 audio = decoded;
-            trimCache(cacheFolder_, kCacheLimitBytes);
+            trimCache(cacheFolder_, cacheLimit_.load());
         }
 
         if (audio != nullptr)

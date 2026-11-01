@@ -77,6 +77,15 @@ public:
     // Where glitches happened, marked on the ruler.
     void setGlitchMarks(std::vector<double> seconds);
 
+    // Draws the selected clip's bar lines faintly through the other decks' lanes, for lining up a
+    // third or fourth record against it.
+    void setShowsBeatGuides(bool show)
+    {
+        beatGuides_ = show;
+        repaint();
+    }
+    bool showsBeatGuides() const { return beatGuides_; }
+
     void setFollowPlayhead(bool follow) { follow_ = follow; }
     bool followsPlayhead() const { return follow_; }
 
@@ -125,7 +134,8 @@ private:
         TrimStart,
         TrimEnd,
         Scrub,
-        Keypoint
+        Keypoint,
+        FlatLine // a flat stretch of automation moving up and down as one; a click adds a keypoint
     };
 
     int numDecks() const { return document_.set().numDecks; }
@@ -163,6 +173,9 @@ private:
     std::optional<AutomationHit> automationAt(juce::Point<float> position) const;
     void automationMouseDown(const juce::MouseEvent& e, const AutomationHit& hit);
     void showAutomationMenu(Id clip, Param param, std::optional<int> keypoint);
+    // If the automation line at `frame` is flat, the keypoints at its ends (kStartPoint for the
+    // starting value); one end if it runs to the end of the clip. Empty on a slope.
+    std::optional<std::vector<int>> flatLineEnds(const Clip& clip, Param param, int64_t frame) const;
     void setDownbeatAt(Id clip, float x, bool snapToBeatLine);
     void navigatedByHand() { followSuspended_ = engine_.isPlaying(); }
     bool following() const { return follow_ && !followSuspended_ && engine_.isPlaying(); }
@@ -173,6 +186,13 @@ private:
                        juce::Rectangle<int> area);
     void paintBeats(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const Track& track,
                     const BeatGrid& grid, juce::Rectangle<int> area);
+    // Calls draw(x, beat) for the clip's beat lines between timeline times left and right. Only
+    // every beat, bar, 4 bars or 16 bars, whichever is the finest that's far enough apart to read,
+    // and never finer than minimumStep beats. Beat 0 is the grid's first downbeat.
+    void forEachVisibleBeat(const Clip& clip, const ClipTiming& timing, const Track& track, const BeatGrid& grid,
+                            double left, double right, int64_t minimumStep,
+                            const std::function<void(float x, int64_t beat)>& draw) const;
+    void paintBeatGuides(juce::Graphics& g);
     void paintAutomation(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
                          juce::Rectangle<int> area);
 
@@ -181,12 +201,19 @@ private:
     Engine& engine_;
     const DisplayOptions& display_;
 
+    // Made once: a Font built from options on every paint looks its typeface up again each time,
+    // which cost ~10% of a core while scrolling.
+    const juce::Font laneFont_{juce::FontOptions(14.0f, juce::Font::bold)};
+    const juce::Font rulerFont_{juce::FontOptions(11.0f)};
+    const juce::Font titleFont_{juce::FontOptions(12.0f)};
+
     double pixelsPerSecond_ = 2.0;
     double viewStart_ = -10.0;
     double playhead_ = 0.0;       // as drawn: the engine's position, carried forward between reports
     double lastReported_ = -1.0;  // the engine's last reported position
     double lastReportClock_ = 0.0; // when it was reported (seconds)
     bool follow_ = true;
+    bool beatGuides_ = true;
     bool followSuspended_ = false; // the user scrolled away while playing
 
     Id selected_ = 0;
@@ -204,6 +231,13 @@ private:
     std::optional<ClipTiming> dragTiming_; // the clip's timing when a keypoint drag began
     Param dragParam_ = Param::Volume;
     int dragKeypoint_ = 0;
+    struct FlatLineDrag
+    {
+        AutomationHit hit;              // where it was pressed, for a click that adds a keypoint
+        std::vector<int> ends;          // keypoint indexes at either end (kStartPoint: starting value)
+        double value = 0.0;             // the line's value when pressed
+    };
+    FlatLineDrag flatLine_;
     std::optional<std::pair<int, double>> dropHint_; // deck, time
 };
 

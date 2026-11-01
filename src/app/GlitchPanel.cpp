@@ -112,7 +112,7 @@ void GlitchPanel::paintListBoxItem(int row, juce::Graphics& g, int width, int he
 {
     if (selected)
         g.fillAll(juce::Colour(0xff3a3e45));
-    g.setFont(juce::FontOptions(13.0f));
+    g.setFont(rowFont_);
 
     if (entries_.empty())
     {
@@ -186,7 +186,7 @@ void GlitchLight::paintButton(juce::Graphics& g, bool highlighted, bool)
     }
 
     g.setColour(count_ == 0 ? juce::Colours::grey : juce::Colours::white);
-    g.setFont(juce::FontOptions(13.0f));
+    g.setFont(rowFont_);
     g.drawText(juce::String(count_), area.withTrimmedLeft(2.0f), juce::Justification::centredLeft);
 }
 

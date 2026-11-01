@@ -10,6 +10,8 @@ namespace vmp
 namespace
 {
 constexpr int kStripWidth = 92;
+constexpr int kMixMeterWidth = 26;
+constexpr int kMeterWidth = 11; // two 5 px bars
 
 const juce::Colour kAutomatedColour{0xffffb340};
 
@@ -30,6 +32,7 @@ ChannelStrip::ChannelStrip(int deck, SetDocument& document, std::function<double
     deckLabel_.setFont(juce::FontOptions(14.0f, juce::Font::bold));
     deckLabel_.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(deckLabel_);
+    addAndMakeVisible(meter_);
     for (auto* label : {&title_, &key_})
     {
         label->setFont(juce::FontOptions(11.0f));
@@ -178,6 +181,7 @@ void ChannelStrip::resized()
     pitchLabel_.setBounds(labels.removeFromLeft(labels.getWidth() / 2));
     volumeLabel_.setBounds(labels);
     pitch_.setBounds(pitchColumn);
+    meter_.setBounds(area.removeFromRight(kMeterWidth).withTrimmedBottom(18)); // level with the fader track
     volume_.setBounds(area);
 }
 
@@ -192,11 +196,28 @@ MixerPanel::MixerPanel(SetDocument& document, AudioPool& pool, const DisplayOpti
         strips_[static_cast<size_t>(d)] = std::make_unique<ChannelStrip>(d, document, playhead);
         addChildComponent(*strips_[static_cast<size_t>(d)]);
     }
+    mixMeter_.setTooltip("Level of the internal mix. The light at the top shows it reached full scale (it would "
+                         "distort): click it to clear.");
+    addAndMakeVisible(mixMeter_);
+    mixLabel_.setText("MIX", juce::dontSendNotification);
+    mixLabel_.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    mixLabel_.setJustificationType(juce::Justification::centred);
+    mixLabel_.setBorderSize({});
+    addAndMakeVisible(mixLabel_);
+}
+
+void MixerPanel::pushLevels(const std::array<StereoPeak, kMaxDecks>& decks, StereoPeak mix, bool mixActive,
+                            double elapsedSeconds)
+{
+    for (size_t d = 0; d < kMaxDecks; ++d)
+        strips_[d]->meter().push(decks[d], elapsedSeconds);
+    mixMeter_.setActive(mixActive);
+    mixMeter_.push(mix, elapsedSeconds);
 }
 
 int MixerPanel::preferredWidth(int numDecks)
 {
-    return kStripWidth * numDecks;
+    return kStripWidth * numDecks + kMixMeterWidth;
 }
 
 void MixerPanel::update(Id selectedClip, double playhead)
@@ -240,6 +261,9 @@ void MixerPanel::update(Id selectedClip, double playhead)
 void MixerPanel::resized()
 {
     auto area = getLocalBounds();
+    auto mix = area.removeFromRight(kMixMeterWidth).reduced(4, 4);
+    mixLabel_.setBounds(mix.removeFromTop(16));
+    mixMeter_.setBounds(mix.withTrimmedBottom(18));
     const int n = std::max(1, shownDecks_);
     const int width = area.getWidth() / n;
     for (int d = 0; d < kMaxDecks; ++d)

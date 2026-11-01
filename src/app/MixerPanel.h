@@ -2,6 +2,7 @@
 
 #include "app/AudioPool.h"
 #include "app/Display.h"
+#include "app/LevelMeter.h"
 #include "core/Document.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -24,6 +25,7 @@ public:
 
     // Shows `clip` (0 for none) with its values at `playhead`.
     void show(Id clip, double playhead, const juce::String& title, const juce::String& key);
+    LevelMeter& meter() { return meter_; }
 
     void paint(juce::Graphics& g) override;
     void resized() override;
@@ -39,6 +41,7 @@ private:
     juce::Label deckLabel_, title_, key_;
     juce::Slider pitch_, volume_, high_, mid_, low_;
     juce::Label pitchLabel_, volumeLabel_, highLabel_, midLabel_, lowLabel_;
+    LevelMeter meter_;
 };
 
 class MixerPanel : public juce::Component
@@ -50,6 +53,10 @@ public:
     // Picks each deck's clip, the selected clip if it is on that deck, otherwise the one under the
     // playhead, and refreshes the strips. Called from the UI timer.
     void update(Id selectedClip, double playhead);
+    // Peak levels since the last call, from the UI timer. The mix meter is greyed out when there
+    // is no internal mix (direct out).
+    void pushLevels(const std::array<StereoPeak, kMaxDecks>& decks, StereoPeak mix, bool mixActive,
+                    double elapsedSeconds);
 
     // Width needed for this many decks.
     static int preferredWidth(int numDecks);
@@ -61,6 +68,8 @@ private:
     AudioPool& pool_;
     const DisplayOptions& display_;
     std::array<std::unique_ptr<ChannelStrip>, kMaxDecks> strips_;
+    LevelMeter mixMeter_;
+    juce::Label mixLabel_;
     int shownDecks_ = 0;
 };
 

@@ -1,5 +1,6 @@
 #include "app/TimelineView.h"
 
+#include "app/LibraryPanel.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
 #include "core/Pitch.h"
@@ -15,7 +16,9 @@ constexpr double kMinPixelsPerSecond = 0.02;  // ~1.5 hours across a laptop scre
 constexpr double kMaxPixelsPerSecond = 48000; // one sample per pixel
 constexpr double kMinTransitionSpan = 4.0;
 constexpr double kFineDragFactor = 0.1;
-constexpr double kMinBeatSpacingPixels = 8.0; // closer than this, beat lines are just noise
+// Closer than this, lines are just noise. Zooming out drops beats first, then bar lines, then
+// 4-bar lines, so the 16-bar lines still show the song's structure.
+constexpr double kMinBeatSpacingPixels = 8.0;
 constexpr int kBeatsInBeatZoom = 8;
 constexpr float kKeypointGrab = 6.0f;
 constexpr int kTitleHeight = 18;
@@ -462,7 +465,7 @@ void TimelineView::paint(juce::Graphics& g)
         g.setColour(deckColour(d));
         g.fillRect(lane.getX(), lane.getY() + 1, 4, lane.getHeight() - 2);
         g.setColour(juce::Colours::white);
-        g.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+        g.setFont(laneFont_);
         g.drawText("Deck " + juce::String(d + 1), lane.withWidth(kHeaderWidth).withTrimmedLeft(10).withHeight(26),
                    juce::Justification::centredLeft);
     }
@@ -473,6 +476,7 @@ void TimelineView::paint(juce::Graphics& g)
         for (const auto& clip : set.clips)
             if (auto it = timings_.find(clip.id); it != timings_.end())
                 paintClip(g, clip, it->second);
+        paintBeatGuides(g);
 
         if (dropHint_)
         {
@@ -517,7 +521,7 @@ void TimelineView::paintRuler(juce::Graphics& g)
             break;
         }
 
-    g.setFont(juce::FontOptions(11.0f));
+    g.setFont(rulerFont_);
     const double first = std::floor(xToTime(kHeaderWidth) / step) * step;
     const double last = xToTime(getWidth());
     for (double t = first; t <= last; t += step)
@@ -620,7 +624,7 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
     if (status.isNotEmpty())
         text << "   " << status;
     g.setColour(juce::Colours::white);
-    g.setFont(juce::FontOptions(12.0f));
+    g.setFont(titleFont_);
     const auto label = area.withHeight(18).withTrimmedLeft(std::max(0, kHeaderWidth - area.getX()) + 4);
     g.drawText(text, label, juce::Justification::centredLeft, true);
 }
@@ -681,38 +685,92 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& clip, const Clip
     g.fillPath(shapes[2]);
 }
 
-void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const Track& track,
-                              const BeatGrid& grid, juce::Rectangle<int> area)
+namespace
 {
-    const double left = std::max(xToTime(std::max(area.getX(), kHeaderWidth)), timing.startSeconds());
-    const double right = std::min(xToTime(std::min(area.getRight(), getWidth())), timing.endSeconds());
+bool everyNth(int64_t beat, int64_t n)
+{
+    return ((beat % n) + n) % n == 0;
+}
+
+// Bar lines red, every 4th bar green, every 16th bar blue; other beats white.
+juce::Colour beatColour(int64_t beat)
+{
+    return everyNth(beat, kBeatsPerPhrase)       ? juce::Colour(0xff3d8bff)
+           : everyNth(beat, 4 * kBeatsPerBar) ? juce::Colour(0xff35d05a)
+           : everyNth(beat, kBeatsPerBar)     ? juce::Colours::red
+                                                : juce::Colours::white;
+}
+} // namespace
+
+void TimelineView::forEachVisibleBeat(const Clip& clip, const ClipTiming& timing, const Track& track,
+                                      const BeatGrid& grid, double left, double right, int64_t minimumStep,
+                                      const std::function<void(float x, int64_t beat)>& draw) const
+{
+    left = std::max(left, timing.startSeconds());
+    right = std::min(right, timing.endSeconds());
     if (right <= left)
         return;
 
-    // Only once beats are far enough apart to judge phase by eye.
+    // The finest level whose lines are far enough apart: every beat, bar, 4 bars or 16 bars.
     const double period = grid.periodSeconds();
-    if (period / timing.speedAt((left + right) / 2.0) * pixelsPerSecond_ < kMinBeatSpacingPixels)
-        return;
+    const double beatPixels = period / timing.speedAt((left + right) / 2.0) * pixelsPerSecond_;
+    int64_t step = 0;
+    for (int64_t s : {int64_t{1}, int64_t{kBeatsPerBar}, int64_t{4 * kBeatsPerBar}, int64_t{kBeatsPerPhrase}})
+        if (step == 0 && beatPixels * static_cast<double>(s) >= kMinBeatSpacingPixels)
+            step = s;
+    if (step == 0)
+        return; // even the 16-bar lines would crowd together
+    step = std::max(step, minimumStep);
 
     const double firstSource = timing.sourceFrameAt(left) / track.sampleRate;
     const double lastSource = timing.sourceFrameAt(right) / track.sampleRate;
-    const auto firstBeat = static_cast<int64_t>(std::ceil((firstSource - grid.firstBeatSeconds) / period));
+    auto firstBeat = static_cast<int64_t>(std::ceil((firstSource - grid.firstBeatSeconds) / period));
     const auto lastBeat = static_cast<int64_t>(std::floor((lastSource - grid.firstBeatSeconds) / period));
-    for (int64_t k = firstBeat; k <= lastBeat; ++k)
+    firstBeat += ((step - firstBeat % step) % step + step) % step; // round up to a multiple of step
+    for (int64_t k = firstBeat; k <= lastBeat; k += step)
     {
         const double frame = (grid.firstBeatSeconds + static_cast<double>(k) * period) * track.sampleRate;
         if (frame < static_cast<double>(clip.inFrame) || frame > static_cast<double>(clip.outFrame))
             continue;
-        const auto x = static_cast<float>(timeToX(timing.timelineSecondsAt(frame)));
-        // Bar lines red, every 4th bar green, every 16th bar blue.
-        auto every = [k](int64_t beats) { return ((k % beats) + beats) % beats == 0; };
-        const bool downbeat = every(kBeatsPerBar);
-        g.setColour(every(kBeatsPerPhrase)       ? juce::Colour(0xff3d8bff)
-                    : every(4 * kBeatsPerBar) ? juce::Colour(0xff35d05a)
-                    : downbeat  ? juce::Colours::red.withAlpha(0.9f)
-                                : juce::Colours::white.withAlpha(0.45f));
-        g.drawLine(x, static_cast<float>(area.getY()), x, static_cast<float>(area.getBottom()), downbeat ? 2.0f : 1.0f);
+        draw(static_cast<float>(timeToX(timing.timelineSecondsAt(frame))), k);
     }
+}
+
+void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const Track& track,
+                              const BeatGrid& grid, juce::Rectangle<int> area)
+{
+    const double left = xToTime(std::max(area.getX(), kHeaderWidth));
+    const double right = xToTime(std::min(area.getRight(), getWidth()));
+    forEachVisibleBeat(clip, timing, track, grid, left, right, 1, [&](float x, int64_t beat) {
+        const bool downbeat = everyNth(beat, kBeatsPerBar);
+        g.setColour(beatColour(beat).withAlpha(downbeat ? 0.9f : 0.45f));
+        g.drawLine(x, static_cast<float>(area.getY()), x, static_cast<float>(area.getBottom()), downbeat ? 2.0f : 1.0f);
+    });
+}
+
+void TimelineView::paintBeatGuides(juce::Graphics& g)
+{
+    // The selected record's bar lines, faint, through every other lane (clips or not), so a third or
+    // fourth deck can be lined up against it.
+    const Set& set = document_.set();
+    const Clip* clip = set.findClip(selected_);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    const auto timing = timings_.find(selected_);
+    if (!beatGuides_ || !grid || timing == timings_.end() || numDecks() < 2)
+        return;
+
+    forEachVisibleBeat(*clip, timing->second, *track, *grid, xToTime(kHeaderWidth), xToTime(getWidth()),
+                       kBeatsPerBar, [&](float x, int64_t beat) {
+                           g.setColour(beatColour(beat).withAlpha(0.35f));
+                           for (int d = 0; d < numDecks(); ++d)
+                               if (d != clip->deck)
+                               {
+                                   const auto lane = waveformBounds(d);
+                                   g.drawLine(x, static_cast<float>(lane.getY()), x,
+                                              static_cast<float>(lane.getBottom()), 1.0f);
+                               }
+                       });
 }
 
 
@@ -860,6 +918,13 @@ void TimelineView::automationMouseDown(const juce::MouseEvent& e, const Automati
     document_.beginGesture();
     if (hit.keypoint)
         dragKeypoint_ = *hit.keypoint;
+    else if (auto ends = flatLineEnds(clip, hit.param, hit.frame))
+    {
+        // On a flat stretch: dragging moves it up and down whole; a click adds a keypoint (mouseUp).
+        flatLine_ = {hit, std::move(*ends), hit.value};
+        drag_ = Drag::FlatLine;
+        return;
+    }
     else
     {
         // A new keypoint on the line where clicked, at the line's value, then drag it.
@@ -871,6 +936,34 @@ void TimelineView::automationMouseDown(const juce::MouseEvent& e, const Automati
             points.begin());
     }
     drag_ = Drag::Keypoint;
+}
+
+std::optional<std::vector<int>> TimelineView::flatLineEnds(const Clip& clip, Param param, int64_t frame) const
+{
+    // The points either side of `frame`, among those that count (from the needle drop on).
+    const auto& points = clip.points(param);
+    int before = kStartPoint;
+    std::optional<int> after;
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+        if (points[i].sourceFrame < clip.inFrame)
+            continue;
+        if (points[i].sourceFrame <= frame)
+            before = static_cast<int>(i);
+        else
+        {
+            after = static_cast<int>(i);
+            break;
+        }
+    }
+    const double beforeValue = before == kStartPoint ? baseValue(clip, param) : points[static_cast<size_t>(before)].value;
+    if (after && std::abs(points[static_cast<size_t>(*after)].value - beforeValue) > 1e-9)
+        return std::nullopt; // a slope
+    // Past the last keypoint the line holds its value to the end of the clip: only one end moves.
+    std::vector<int> ends{before};
+    if (after)
+        ends.push_back(*after);
+    return ends;
 }
 
 void TimelineView::showAutomationMenu(Id clip, Param param, std::optional<int> keypoint)
@@ -966,6 +1059,27 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
         });
         break;
     }
+    case Drag::FlatLine:
+    {
+        const auto area = automationBounds(dragOrigin_.deck);
+        const double delta = yToValue(dragParam_, e.position.y, area) -
+                             yToValue(dragParam_, static_cast<float>(e.mouseDownPosition.y), area);
+        const auto param = dragParam_;
+        const double value = flatLine_.value + delta;
+        const auto ends = flatLine_.ends;
+        const auto& points = dragOrigin_.points(param);
+        document_.edit([&](Set& s) {
+            bool changed = false;
+            for (int index : ends)
+                changed = (index == kStartPoint
+                               ? edit::setStartValue(s, id, param, value)
+                               : edit::moveAutomationPoint(s, id, param, static_cast<size_t>(index),
+                                                           points[static_cast<size_t>(index)].sourceFrame, value)) ||
+                          changed;
+            return changed;
+        });
+        break;
+    }
     case Drag::None:
         break;
     }
@@ -973,7 +1087,14 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
 
 void TimelineView::mouseUp(const juce::MouseEvent& e)
 {
-    if (drag_ == Drag::Move || drag_ == Drag::TrimStart || drag_ == Drag::TrimEnd || drag_ == Drag::Keypoint)
+    // A click on a flat line without dragging adds a keypoint there, as on any other line.
+    if (drag_ == Drag::FlatLine && !e.mouseWasDraggedSinceMouseDown())
+    {
+        const auto hit = flatLine_.hit;
+        document_.edit([&](Set& s) { return edit::setAutomationPoint(s, hit.clip, hit.param, hit.frame, hit.value); });
+    }
+    if (drag_ == Drag::Move || drag_ == Drag::TrimStart || drag_ == Drag::TrimEnd || drag_ == Drag::Keypoint ||
+        drag_ == Drag::FlatLine)
         document_.endGesture();
     // Shift-click without dragging sets the downbeat (shift-drag is a fine move).
     if (drag_ == Drag::Move && e.mods.isShiftDown() && !e.mouseWasDraggedSinceMouseDown())
@@ -1099,7 +1220,7 @@ void TimelineView::filesDropped(const juce::StringArray& paths, int x, int y)
 
 bool TimelineView::isInterestedInDragSource(const SourceDetails& details)
 {
-    return dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get()) != nullptr;
+    return dynamic_cast<LibraryTree*>(details.sourceComponent.get()) != nullptr;
 }
 
 void TimelineView::itemDragMove(const SourceDetails& details)
@@ -1114,13 +1235,13 @@ void TimelineView::itemDragExit(const SourceDetails&)
 
 void TimelineView::itemDropped(const SourceDetails& details)
 {
-    auto* tree = dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get());
+    auto* tree = dynamic_cast<LibraryTree*>(details.sourceComponent.get());
     if (tree == nullptr)
         return;
     juce::Array<juce::File> files;
-    for (int i = 0; i < tree->getNumSelectedFiles(); ++i)
-        if (pool_.canLoad(tree->getSelectedFile(i)))
-            files.add(tree->getSelectedFile(i));
+    for (const auto& file : tree->selectedFiles())
+        if (pool_.canLoad(file))
+            files.add(file);
     dropFiles(files, details.localPosition.x, details.localPosition.y);
 }
 
