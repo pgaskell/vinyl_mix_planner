@@ -21,17 +21,29 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(external/libsamplerate EXCLUDE_FROM_ALL)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+set(JSON_Install OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/json EXCLUDE_FROM_ALL)
+
 add_subdirectory(external/JUCE EXCLUDE_FROM_ALL)
 
 set(VMP_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor)
+
+# --- Core: set model, timing math, file format; no JUCE dependency ----------
+
+add_library(vmp_core STATIC
+    src/core/PitchCurve.cpp
+    src/core/Set.cpp
+    src/core/SetFile.cpp)
+target_include_directories(vmp_core PUBLIC src)
+target_link_libraries(vmp_core PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(vmp_core PRIVATE ${VMP_WARNINGS})
 
 # --- Engine: real-time audio, no JUCE dependency ----------------------------
 
 add_library(vmp_engine STATIC
     src/engine/Deck.cpp
     src/engine/Engine.cpp)
-target_include_directories(vmp_engine PUBLIC src)
-target_link_libraries(vmp_engine PUBLIC SampleRate::samplerate)
+target_link_libraries(vmp_engine PUBLIC vmp_core SampleRate::samplerate)
 target_compile_options(vmp_engine PRIVATE ${VMP_WARNINGS})
 
 # --- App --------------------------------------------------------------------
@@ -77,6 +89,9 @@ if(VMP_BUILD_TESTS)
 
     add_executable(vmp_tests
         tests/PitchTests.cpp
+        tests/PitchCurveTests.cpp
+        tests/SetTests.cpp
+        tests/SetFileTests.cpp
         tests/MotorTests.cpp
         tests/DeckTests.cpp
         tests/EngineTests.cpp)

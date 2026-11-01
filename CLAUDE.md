@@ -46,7 +46,7 @@ DJM-900NXS2, and generic Core Audio devices).
 - Bounce the set to stereo in several file formats.
 
 ## Stack
-- C++20, JUCE 9 (AGPLv3), libsamplerate (resampling), Catch2 (tests). Submodules in `external/`.
+- C++20, JUCE 9 (AGPLv3), libsamplerate (resampling), nlohmann/json (set files), Catch2 (tests). Submodules in `external/`.
 - CMake + Ninja with presets; minimum macOS 11.0; release builds universal.
 - License: AGPL-3.0-or-later (forced by JUCE's open-source license).
 
@@ -55,7 +55,9 @@ DJM-900NXS2, and generic Core Audio devices).
   for offline bounce, which must run the same code as live playback.
 - Audio thread: no locks, no allocation, no freeing. Controls are atomics; whole objects
   (tracks) go through the pending/retired hand-off in `Deck`.
-- Store positions in source-file frames, not seconds after pitch.
+- Store positions in source-file frames, not seconds after pitch. Timeline is in seconds; no tempo grid.
+- Pitch moves are anchored to source frames (the music), not timeline time, so trims keep them on the bar.
+- `ClipTiming` is the only place that maps timeline <-> source; UI and engine must both use it.
 - Drivers only pass enabled channels: always route through the physical->buffer map.
 
 ## Building on this machine

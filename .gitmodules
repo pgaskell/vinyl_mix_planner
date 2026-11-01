@@ -7,3 +7,7 @@
 [submodule "external/Catch2"]
 	path = external/Catch2
 	url = https://github.com/catchorg/Catch2.git
+[submodule "external/json"]
+	shallow = true
+	path = external/json
+	url = https://github.com/nlohmann/json.git
