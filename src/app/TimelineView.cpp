@@ -191,7 +191,17 @@ void TimelineView::setSelectedClip(Id id)
 
 void TimelineView::updatePlayhead()
 {
-    const double now = engine_.playheadSeconds();
+    // The engine reports its position once per audio block, which is jerky on screen. While
+    // playing, carry it forward by the time since the last report.
+    const double reported = engine_.playheadSeconds();
+    const double clock = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    if (std::abs(reported - lastReported_) > 1.0e-9)
+    {
+        lastReported_ = reported;
+        lastReportClock_ = clock;
+    }
+    constexpr double kMaxCarry = 0.05; // never run ahead of the engine by more than this
+    const double now = engine_.isPlaying() ? reported + std::min(clock - lastReportClock_, kMaxCarry) : reported;
     if (std::abs(now - playhead_) < 1.0e-9)
         return;
     playhead_ = now;
@@ -599,30 +609,57 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
 void TimelineView::paintWaveform(juce::Graphics& g, const Clip& clip, const ClipTiming& timing,
                                  const WaveformPeaks& peaks, juce::Rectangle<int> area)
 {
-    const int from = std::max(area.getX(), kHeaderWidth);
-    const int to = std::min(area.getRight(), getWidth());
+    const double from = std::max(area.getX(), kHeaderWidth);
+    const double to = std::min(area.getRight(), getWidth());
     const float mid = static_cast<float>(area.getCentreY());
     const float half = static_cast<float>(area.getHeight()) / 2.0f - 1.0f;
     const auto inFrame = static_cast<double>(clip.inFrame), outFrame = static_cast<double>(clip.outFrame);
 
-    // Low behind, mids over it, highs on top, each mirrored about the centre line.
-    auto bar = [&](float x, float level) {
-        const float h = std::max(0.5f, std::min(level, 1.0f) * half);
-        g.fillRect(x, mid - h, 1.0f, 2.0f * h);
-    };
-    for (int x = from; x < to; ++x)
+    // Columns are a pixel wide but counted from the clip start, not the screen edge, so while the
+    // view scrolls each column keeps covering the same audio and only its position moves. Sampling
+    // from the screen edge made every column's peak change as it scrolled, which flickered.
+    const double columnSeconds = 1.0 / pixelsPerSecond_;
+    const double start = timing.startSeconds(), end = timing.endSeconds();
+    const auto firstColumn = static_cast<int64_t>(std::floor((xToTime(from) - start) / columnSeconds));
+    const auto lastColumn = static_cast<int64_t>(std::ceil((xToTime(to) - start) / columnSeconds));
+
+    // One outline per band, mirrored about the centre and filled, so edges are anti-aliased and
+    // move smoothly between pixels.
+    std::array<juce::Path, 3> shapes;
+    std::array<std::vector<juce::Point<float>>, 3> tops;
+    for (auto& top : tops)
+        top.reserve(static_cast<size_t>(lastColumn - firstColumn + 2));
+    for (int64_t k = firstColumn; k <= lastColumn; ++k)
     {
-        const double f0 = std::clamp(timing.sourceFrameAt(xToTime(x)), inFrame, outFrame);
-        const double f1 = std::clamp(timing.sourceFrameAt(xToTime(x + 1)), inFrame, outFrame);
+        const double t0 = std::clamp(start + static_cast<double>(k) * columnSeconds, start, end);
+        const double t1 = std::clamp(t0 + columnSeconds, start, end);
+        const double f0 = std::clamp(timing.sourceFrameAt(t0), inFrame, outFrame);
+        const double f1 = std::clamp(timing.sourceFrameAt(t1), inFrame, outFrame);
         const auto bands = peaks.range(static_cast<int64_t>(std::floor(f0)), static_cast<int64_t>(std::ceil(f1)));
-        const auto fx = static_cast<float>(x);
-        g.setColour(kLowColour);
-        bar(fx, bands.low);
-        g.setColour(kMidColour);
-        bar(fx, bands.mid);
-        g.setColour(kHighColour);
-        bar(fx, bands.high);
+        const auto x = static_cast<float>(timeToX((t0 + t1) / 2.0));
+        const float levels[] = {bands.low, bands.mid, bands.high};
+        for (size_t b = 0; b < 3; ++b)
+            tops[b].push_back({x, mid - std::max(0.5f, std::min(levels[b], 1.0f) * half)});
     }
+    for (size_t b = 0; b < 3; ++b)
+    {
+        if (tops[b].empty())
+            continue;
+        shapes[b].startNewSubPath(tops[b].front());
+        for (size_t i = 1; i < tops[b].size(); ++i)
+            shapes[b].lineTo(tops[b][i]);
+        for (auto it = tops[b].rbegin(); it != tops[b].rend(); ++it)
+            shapes[b].lineTo(it->x, 2.0f * mid - it->y);
+        shapes[b].closeSubPath();
+    }
+
+    // Low behind, mids over it, highs on top.
+    g.setColour(kLowColour);
+    g.fillPath(shapes[0]);
+    g.setColour(kMidColour);
+    g.fillPath(shapes[1]);
+    g.setColour(kHighColour);
+    g.fillPath(shapes[2]);
 }
 
 void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const Track& track,

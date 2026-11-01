@@ -180,7 +180,9 @@ private:
 
     double pixelsPerSecond_ = 2.0;
     double viewStart_ = -10.0;
-    double playhead_ = 0.0;
+    double playhead_ = 0.0;       // as drawn: the engine's position, carried forward between reports
+    double lastReported_ = -1.0;  // the engine's last reported position
+    double lastReportClock_ = 0.0; // when it was reported (seconds)
     bool follow_ = true;
     bool followSuspended_ = false; // the user scrolled away while playing
 

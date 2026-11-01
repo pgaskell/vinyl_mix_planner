@@ -65,11 +65,12 @@ WaveformPeaks::Bands WaveformPeaks::range(int64_t first, int64_t last) const
     if (last <= first)
         return {};
 
-    // Coarsest level whose bins still fit inside the range; edges round out to whole bins.
+    // Coarsest level with at least four bins across the range. Edges round out to whole bins, so
+    // coarser bins would smear peaks into neighbouring ranges (and make waveforms look blurred).
     const int64_t length = last - first;
     const Level* level = &levels_.front();
     for (const auto& l : levels_)
-        if (l.binFrames <= length)
+        if (l.binFrames * 4 <= length)
             level = &l;
 
     const auto firstBin = static_cast<size_t>(first / level->binFrames);

@@ -161,7 +161,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     documentChanged();
     timeline_.zoomToSet();
 
-    startTimerHz(30);
+    startTimerHz(60); // smooth scrolling while following the playhead
     juce::MessageManager::callAsync([safe = juce::Component::SafePointer(&timeline_)] {
         if (safe != nullptr)
             safe->grabKeyboardFocus();
