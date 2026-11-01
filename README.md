@@ -34,8 +34,8 @@ Needs macOS 11 or later, on Apple Silicon or Intel.
 - Plays through your laptop, or one deck per channel into a club mixer (e.g. Pioneer DJM-900)
 - Checks for things you can't do live, like two records on one deck or no time to change records
 
-Still to come: DJM-900 mixer and effects emulation, recording mixer moves over MIDI, and
-exporting the mix to an audio file.
+Still to come: DJM-900 mixer and effects emulation, recording mixer moves over MIDI,
+exporting the mix to an audio file, and more; see [TODO.md](TODO.md).
 
 ## Building
 
