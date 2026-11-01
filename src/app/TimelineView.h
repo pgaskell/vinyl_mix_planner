@@ -74,6 +74,9 @@ public:
     // Brings the playhead into view and resumes following it.
     void showPlayhead();
 
+    // Where glitches happened, marked on the ruler.
+    void setGlitchMarks(std::vector<double> seconds);
+
     void setFollowPlayhead(bool follow) { follow_ = follow; }
     bool followsPlayhead() const { return follow_; }
 
@@ -190,6 +193,7 @@ private:
     std::map<Id, ClipTiming> timings_;
     std::map<Id, Issue::Severity> issues_;
     std::vector<std::pair<double, double>> transitions_; // spans where two decks play
+    std::vector<double> glitchMarks_;
 
     std::array<std::array<bool, kNumParams>, kMaxDecks> shown_{};
     std::array<std::array<juce::ToggleButton, kNumParams>, kMaxDecks> toggles_;

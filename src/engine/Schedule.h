@@ -18,7 +18,7 @@ struct ScheduledClip
     Clip clip; // a copy: its mixer settings and automation
     double start, end;
     ClipTiming timing;
-    std::shared_ptr<const TrackAudio> audio; // keeps the audio alive while the engine uses it
+    std::shared_ptr<const TrackAudio> audio; // keeps the audio alive while the engine uses it; null if not loaded
 };
 
 struct Schedule
@@ -30,7 +30,8 @@ struct Schedule
 // Returns the decoded audio for a track, or null if it isn't loaded (yet).
 using AudioLookup = std::function<std::shared_ptr<const TrackAudio>(const Track&)>;
 
-// Clips whose audio isn't loaded are left out.
+// Clips whose audio isn't loaded (yet) are kept with null audio: they play silence, and the
+// engine reports it as a glitch.
 std::unique_ptr<Schedule> buildSchedule(const Set& set, const AudioLookup& lookup);
 
 } // namespace vmp

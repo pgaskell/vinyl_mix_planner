@@ -155,10 +155,10 @@ std::vector<float> analysisSignal(const TrackAudio& audio, double& sampleRate)
     antiAlias.design(FilterType::LowPass, 0.45 * sampleRate, audio.sampleRate);
     std::vector<float> out;
     out.reserve(static_cast<size_t>(audio.frames / factor + 1));
+    const float* samples = audio.data();
     for (int64_t f = 0; f < audio.frames; ++f)
     {
-        const float x = antiAlias.process(0.5f * (audio.interleaved[static_cast<size_t>(f) * 2] +
-                                                  audio.interleaved[static_cast<size_t>(f) * 2 + 1]));
+        const float x = antiAlias.process(0.5f * (samples[f * 2] + samples[f * 2 + 1]));
         if (f % factor == 0)
             out.push_back(x);
     }

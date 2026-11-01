@@ -2,6 +2,8 @@
 
 #include "core/Waveform.h"
 
+#include <unistd.h>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -50,4 +52,32 @@ TEST_CASE("Out-of-range requests are clamped")
     CHECK(peaks.range(-500, 200).mid > 0.0f);
     CHECK(peaks.range(2000000, 3000000).mid == 0.0f);
     CHECK(peaks.range(500, 400).mid == 0.0f);
+}
+
+TEST_CASE("Peaks survive a save and load, and stale files are refused")
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("vmp-waveform-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "peaks.bin";
+
+    const auto audio = makeSine(800.0, 44100.0, 3.0, 0.6);
+    const WaveformPeaks original(*audio);
+    REQUIRE(original.save(file));
+
+    const auto loaded = WaveformPeaks::load(file, audio->frames);
+    REQUIRE(loaded);
+    for (int64_t first : {int64_t{0}, int64_t{1000}, int64_t{50000}})
+        for (int64_t length : {int64_t{10}, int64_t{700}, int64_t{60000}})
+        {
+            const auto a = original.range(first, first + length), b = loaded->range(first, first + length);
+            CHECK(a.low == b.low);
+            CHECK(a.mid == b.mid);
+            CHECK(a.high == b.high);
+        }
+
+    CHECK_FALSE(WaveformPeaks::load(file, audio->frames + 1)); // the track changed length
+    CHECK_FALSE(WaveformPeaks::load(dir / "missing.bin", audio->frames));
+    std::filesystem::resize_file(file, 100); // truncated
+    CHECK_FALSE(WaveformPeaks::load(file, audio->frames));
+    std::filesystem::remove_all(dir);
 }

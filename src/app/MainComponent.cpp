@@ -31,7 +31,8 @@ const juce::Colour kBackground{0xff1b1d21};
 MainComponent::MainComponent(juce::PropertiesFile& settings)
     : settings_(settings),
       analysisCache_(settings.getFile().getSiblingFile("analysis.json")),
-      pool_(analysisCache_),
+      pool_(analysisCache_, juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                                .getChildFile("Library/Caches/org.vinylmixplanner.app/Audio")),
       timeline_(document_, pool_, engine_, display_),
       inspector_(document_, pool_, display_, commands_),
       mixer_(document_, pool_, display_, [this] { return engine_.playheadSeconds(); }),
@@ -78,7 +79,16 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     midiLog_.setReadOnly(true);
     midiLog_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
     const auto tabColour = juce::Colour(0xff23262b);
+    glitches_.onGlitchClicked = [this](double seconds) {
+        engine_.seek(std::max(0.0, seconds - 2.0)); // a little before, to hear it coming
+        timeline_.showPlayhead();
+    };
+    glitches_.onChanged = [this] {
+        glitchLight_.setCount(glitches_.count());
+        timeline_.setGlitchMarks(glitches_.positions());
+    };
     bottomTabs_.addTab("Issues", tabColour, &issues_, false);
+    bottomTabs_.addTab("Glitches", tabColour, &glitches_, false);
     bottomTabs_.addTab("MIDI monitor", tabColour, &midiLog_, false);
     addAndMakeVisible(bottomTabs_);
 
@@ -131,11 +141,16 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     decksBox_.onChange = [this] { menuItemSelected(kMenuDecksBase + decksBox_.getSelectedId(), 3); };
     addAndMakeVisible(decksBox_);
 
+    glitchLight_.setTooltip("Audio glitches: dropouts and unexpected silences while playing. Click to list them.");
+    glitchLight_.onClick = [this] { bottomTabs_.setCurrentTabIndex(1); };
+    addAndMakeVisible(glitchLight_);
+
     deviceLabel_.setFont(juce::FontOptions(12.0f));
     deviceLabel_.setMinimumHorizontalScale(0.6f);
     addAndMakeVisible(deviceLabel_);
 
     // --- Audio and MIDI ---
+    prefetcher_.start();
     restoreRouting();
     const auto savedDevice = settings_.getXmlValue("audioDeviceState");
     const auto error = deviceManager_.initialise(0, 2, savedDevice.get(), true);
@@ -254,6 +269,7 @@ void MainComponent::timerCallback()
     timeLabel_.setText(formatTime(engine_.playheadSeconds(), true), juce::dontSendNotification);
     playButton_.setButtonText(engine_.isPlaying() ? "Pause" : "Play");
     engine_.collectGarbage();
+    collectGlitches();
 
     juce::StringArray incoming;
     {
@@ -268,6 +284,44 @@ void MainComponent::timerCallback()
         midiLog_.setText(midiLines_.joinIntoString("\n"), false);
         midiLog_.moveCaretToEnd();
     }
+}
+
+void MainComponent::collectGlitches()
+{
+    std::vector<Glitch> found;
+    Glitch glitch;
+    while (engine_.popGlitch(glitch))
+        found.push_back(glitch);
+
+    // The driver counts dropouts too (Core Audio's processor overloads), including ones that
+    // aren't the engine's fault. An engine overload also shows up here, so don't list it twice.
+    const int dropouts = driverDropouts_.count();
+    const bool overloaded = std::any_of(found.begin(), found.end(),
+                                        [](const Glitch& g) { return g.kind == GlitchKind::Overload; });
+    if (dropouts > lastDropouts_ && engine_.isPlaying() && !overloaded)
+        found.push_back({GlitchKind::DriverDropout, -1, engine_.playheadSeconds()});
+    lastDropouts_ = dropouts;
+
+    glitches_.add(found);
+    glitches_.addLost(engine_.takeDroppedGlitches());
+
+    peakLoad_ = std::max(peakLoad_, engine_.takePeakLoad());
+    if (++loadTicks_ >= 60)
+    {
+        const auto stream = prefetcher_.stats();
+        const double chunkMB = StreamedAudio::kChunkFloats * sizeof(float) / 1048576.0;
+        glitchLight_.setTooltip(
+            "Audio glitches: dropouts and unexpected silences while playing. Click to list them.\n"
+            "Engine load in the last second: " + juce::String(juce::roundToInt(peakLoad_ * 100.0f)) +
+            "% of the time available.\nStreaming: " + juce::String(juce::roundToInt(stream.chunksLoaded * chunkMB)) +
+            " of " + juce::String(juce::roundToInt(stream.poolChunks * chunkMB)) + " MB of audio loaded" +
+            (stream.readErrors > 0 ? ", " + juce::String(static_cast<juce::int64>(stream.readErrors)) + " read errors"
+                                   : juce::String()) +
+            (stream.memoryLocked ? juce::String() : ". Warning: couldn't lock its memory, so it may be paged out"));
+        peakLoad_ = 0.0f;
+        loadTicks_ = 0;
+    }
+    glitchLight_.update();
 }
 
 void MainComponent::documentChanged()
@@ -292,7 +346,7 @@ void MainComponent::documentChanged()
 
 void MainComponent::rebuildSchedule()
 {
-    engine_.setSchedule(buildSchedule(document_.set(), [this](const Track& track) {
+    prefetcher_.setSchedule(buildSchedule(document_.set(), [this](const Track& track) {
         const auto* entry = pool_.find(track.path);
         return entry != nullptr && entry->status == AudioPool::Status::Ready ? entry->audio : nullptr;
     }));
@@ -320,6 +374,8 @@ std::vector<MainComponent::OutputPair> MainComponent::outputPairs()
 
 void MainComponent::updateDeviceInfo()
 {
+    driverDropouts_.watch(deviceManager_.getCurrentAudioDevice());
+    lastDropouts_ = driverDropouts_.count();
     if (auto* device = deviceManager_.getCurrentAudioDevice())
     {
         const auto active = device->getActiveOutputChannels();
@@ -1084,6 +1140,7 @@ bool MainComponent::perform(const InvocationInfo& info)
         else
         {
             playStartedAt_ = playhead;
+            prefetcher_.setHotSpot(playStartedAt_); // ready for Stop
             engine_.play();
         }
         break;
@@ -1308,6 +1365,8 @@ void MainComponent::resized()
         bar.removeFromLeft(3);
     }
     settingsButton_.setBounds(bar.removeFromRight(64));
+    bar.removeFromRight(6);
+    glitchLight_.setBounds(bar.removeFromRight(48));
     bar.removeFromRight(6);
     decksBox_.setBounds(bar.removeFromRight(86));
     bar.removeFromRight(6);

@@ -9,10 +9,6 @@
 
 - **VU meters.** A level meter per deck channel and for the master output, with peak hold and
   a clip light, so you can match levels through a transition and see when the mix overloads.
-- **Glitch indicator.** A light in the toolbar that flashes when the audio drops out, with a
-  count and a list of when it happened (and marks on the timeline at those points), to help
-  track down problems. Sources: blocks where the engine missed its deadline, dropouts the
-  audio driver reports, and anything the engine skipped (e.g. audio not loaded yet).
 
 ## Library and playlists
 
@@ -45,7 +41,5 @@
   with a COLOR knob per channel.
 - Record mixer moves (faders, EQ, FX) over MIDI into the automation.
 - Export the mix to an audio file (WAV, AIFF, FLAC).
-- Stream audio from disk so long sets don't hold every track in memory. Today every track is
-  decoded into memory at about 21 MB per minute: a 67-minute test set uses 1.4 GB, so a
-  two-hour set would need about 2.6 GB.
+- Decode cache: a setting for its size limit (fixed at 10 GB) and a button to clear it.
 - Sign and notarise the app so it opens without the security warning.

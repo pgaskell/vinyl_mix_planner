@@ -38,6 +38,7 @@ add_library(vmp_core STATIC
     src/core/PitchCurve.cpp
     src/core/Set.cpp
     src/core/SetFile.cpp
+    src/core/StreamedAudio.cpp
     src/core/Waveform.cpp)
 target_include_directories(vmp_core PUBLIC src)
 target_link_libraries(vmp_core PRIVATE nlohmann_json::nlohmann_json)
@@ -51,6 +52,7 @@ add_library(vmp_engine STATIC
     src/engine/Deck.cpp
     src/engine/Engine.cpp
     src/engine/MixerChannel.cpp
+    src/engine/Prefetcher.cpp
     src/engine/Schedule.cpp)
 target_link_libraries(vmp_engine PUBLIC vmp_core SampleRate::samplerate)
 target_compile_options(vmp_engine PRIVATE ${VMP_WARNINGS})
@@ -67,6 +69,8 @@ juce_add_gui_app(VinylMixPlanner
 target_sources(VinylMixPlanner PRIVATE
     src/app/AnalysisCache.cpp
     src/app/AudioPool.cpp
+    src/app/DriverDropouts.cpp
+    src/app/GlitchPanel.cpp
     src/app/Inspector.cpp
     src/app/IssuesPanel.cpp
     src/app/LibraryPanel.cpp
@@ -113,6 +117,7 @@ if(VMP_BUILD_TESTS)
         tests/PitchTests.cpp
         tests/SetFileTests.cpp
         tests/SetTests.cpp
+        tests/StreamingTests.cpp
         tests/WaveformTests.cpp)
     target_link_libraries(vmp_tests PRIVATE vmp_engine Catch2::Catch2WithMain)
     target_compile_options(vmp_tests PRIVATE ${VMP_WARNINGS})

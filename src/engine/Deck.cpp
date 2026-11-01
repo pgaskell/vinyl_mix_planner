@@ -12,8 +12,6 @@ namespace vmp
 namespace
 {
 constexpr double kMaxSrcRatio = 256.0; // libsamplerate's limit in both directions
-// Requests within this distance of the deck's position are reached by slewing; beyond, it jumps.
-constexpr double kSlewWindowSeconds = 0.1;
 // How much faster or slower than requested the deck may play while catching up. 10% closes a
 // 10 ms gap in about 100 ms and sounds like a nudge on the platter.
 constexpr double kMaxSlew = 0.1;
@@ -85,9 +83,18 @@ void Deck::render(const TrackAudio* track, double startFrame, double endFrame, f
         // offering the whole file would make readFrame_ run far ahead of what is heard.
         const auto needed = static_cast<int64_t>(std::ceil(want / ratio)) + 4;
 
+        // Streamed audio is loaded in chunks, so feed at most to the end of the current one.
+        int64_t available = 0;
+        const float* input = track->framesAt(readFrame_, available);
+        if (input == nullptr)
+        {
+            track_ = nullptr; // start afresh at the requested position next time
+            break;
+        }
+
         SRC_DATA data{};
-        data.data_in = track->interleaved.data() + readFrame_ * 2;
-        data.input_frames = static_cast<long>(std::min(needed, track->frames - readFrame_));
+        data.data_in = input;
+        data.input_frames = static_cast<long>(std::min(needed, available));
         data.data_out = scratch_.data();
         data.output_frames = want;
         data.src_ratio = ratio;

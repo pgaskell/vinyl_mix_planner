@@ -1,6 +1,7 @@
 #include "engine/Engine.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -11,6 +12,12 @@ namespace
 {
 constexpr double kNoSeek = std::numeric_limits<double>::quiet_NaN();
 
+int64_t steadyNanoseconds()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 void addInto(float* dest, const float* src, int numFrames)
 {
     if (dest != nullptr)
@@ -19,7 +26,7 @@ void addInto(float* dest, const float* src, int numFrames)
 }
 } // namespace
 
-Engine::Engine() : seekRequest_(kNoSeek)
+Engine::Engine() : seekRequest_(kNoSeek), clock_(steadyNanoseconds)
 {
     for (size_t i = 0; i < kMaxDecks; ++i)
     {
@@ -58,6 +65,12 @@ void Engine::prepare(double sampleRate, int maxBlockFrames, std::vector<int> phy
     mixRight_.assign(size, 0.0f);
 }
 
+double Engine::prefetchTarget() const
+{
+    const double seek = seekRequest_.load();
+    return std::isnan(seek) ? playhead_.load() : seek;
+}
+
 float* Engine::outputFor(float* const* outputs, int numOutputs, int physicalChannel) const
 {
     if (physicalChannel < 0 || physicalChannel >= static_cast<int>(physicalToBuffer_.size()))
@@ -68,8 +81,45 @@ float* Engine::outputFor(float* const* outputs, int numOutputs, int physicalChan
     return outputs[index];
 }
 
+namespace
+{
+// Bumps the render counter on entry and exit (see Prefetcher::release for the pairing fence).
+struct RenderScope
+{
+    explicit RenderScope(std::atomic<uint64_t>& counter) : counter_(counter)
+    {
+        counter_.fetch_add(1);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
+    ~RenderScope() { counter_.fetch_add(1); }
+    std::atomic<uint64_t>& counter_;
+};
+} // namespace
+
+bool Engine::audioLoaded(const Schedule* schedule, double start, int numFrames) const
+{
+    if (schedule == nullptr)
+        return true;
+    const double end = start + numFrames / sampleRate_;
+    for (int d = 0; d < schedule->numDecks; ++d)
+        for (const auto& clip : schedule->lanes[static_cast<size_t>(d)])
+        {
+            if (clip.audio == nullptr || clip.end <= start || clip.start >= end)
+                continue;
+            const double margin = Deck::kReadMarginSeconds * clip.audio->sampleRate;
+            const double from = clip.timing.sourceFrameAt(std::max(start, clip.start)) - margin;
+            const double to = clip.timing.sourceFrameAt(std::min(end, clip.end)) + margin;
+            if (!clip.audio->resident(static_cast<int64_t>(std::floor(from)), static_cast<int64_t>(std::ceil(to))))
+                return false;
+        }
+    return true;
+}
+
 void Engine::render(float* const* outputs, int numOutputs, int numFrames)
 {
+    const RenderScope scope(renderCounter_);
+    const int64_t began = clock_();
+
     for (int ch = 0; ch < numOutputs; ++ch)
         if (outputs[ch] != nullptr)
             std::fill_n(outputs[ch], numFrames, 0.0f);
@@ -78,11 +128,41 @@ void Engine::render(float* const* outputs, int numOutputs, int numFrames)
 
     const double seekTo = seekRequest_.exchange(kNoSeek);
     if (!std::isnan(seekTo))
+    {
         position_ = std::max(0.0, seekTo);
+        silentClip_.fill(0); // report missing or late audio again
+        underrunClip_.fill(0);
+        prerollFrames_ = static_cast<int64_t>(kPrerollSeconds * sampleRate_);
+    }
 
     const bool playing = playing_.load();
-    if (maxBlock_ > 0 && (playing || transportGain_ > 0.0f))
+    if (playing && !wasPlaying_)
+        prerollFrames_ = static_cast<int64_t>(kPrerollSeconds * sampleRate_);
+    wasPlaying_ = playing;
+
+    // Starting (or jumping) somewhere whose audio isn't loaded yet: hold the playhead in silence
+    // for a moment instead of playing gaps. Decided before any deck moves.
+    if (playing && prerollFrames_ > 0)
     {
+        if (!audioLoaded(schedule, position_, numFrames))
+        {
+            prerollFrames_ -= numFrames;
+            transportGain_ = 0.0f; // fade in once it's ready
+            playhead_.store(position_);
+            return;
+        }
+        prerollFrames_ = 0;
+    }
+
+    const bool audible = maxBlock_ > 0 && (playing || transportGain_ > 0.0f);
+    if (!audible)
+    {
+        silentClip_.fill(0); // report missing or late audio again next time
+        underrunClip_.fill(0);
+    }
+    else
+    {
+        const double startedAt = position_;
         // Devices occasionally deliver blocks larger than they announced.
         for (int done = 0; done < numFrames;)
         {
@@ -90,6 +170,19 @@ void Engine::render(float* const* outputs, int numOutputs, int numFrames)
             renderChunk(schedule, playing, outputs, numOutputs, done, chunk);
             done += chunk;
         }
+
+        // Missing the deadline means the driver had nothing to play: a dropout. Only counted while
+        // something is audible; reported where the block began.
+        const double budget = numFrames / sampleRate_;
+        const double used = static_cast<double>(clock_() - began) * 1e-9;
+        const auto load = static_cast<float>(used / budget);
+        if (load > peakLoad_.load(std::memory_order_relaxed))
+            peakLoad_.store(load, std::memory_order_relaxed);
+        // A run of late blocks is one glitch, reported at its first block.
+        if (used > budget && !overloaded_)
+            glitches_.push({GlitchKind::Overload, -1, startedAt, static_cast<float>(used * 1e3),
+                            static_cast<float>(budget * 1e3)});
+        overloaded_ = used > budget;
     }
     playhead_.store(position_);
 }
@@ -115,8 +208,33 @@ void Engine::renderLane(const std::vector<ScheduledClip>& lane, size_t deck, dou
         if (std::isfinite(segmentEnd))
             frames = std::clamp(static_cast<int>(std::ceil((segmentEnd - t) * sampleRate_)), 1, frames);
 
-        if (active != nullptr)
+        if (active != nullptr && active->audio == nullptr)
         {
+            if (silentClip_[deck] != active->clip.id)
+            {
+                silentClip_[deck] = active->clip.id;
+                glitches_.push({GlitchKind::NotLoaded, static_cast<int>(deck), t});
+            }
+            player.renderSilence(left + done, right + done, frames);
+        }
+        else if (active != nullptr &&
+                 !active->audio->resident(
+                     static_cast<int64_t>(std::floor(active->timing.sourceFrameAt(t) -
+                                                     Deck::kReadMarginSeconds * active->audio->sampleRate)),
+                     static_cast<int64_t>(std::ceil(active->timing.sourceFrameAt(t + frames / sampleRate_) +
+                                                    Deck::kReadMarginSeconds * active->audio->sampleRate))))
+        {
+            // Streamed audio that didn't arrive in time.
+            if (underrunClip_[deck] != active->clip.id)
+            {
+                underrunClip_[deck] = active->clip.id;
+                glitches_.push({GlitchKind::Underrun, static_cast<int>(deck), t});
+            }
+            player.renderSilence(left + done, right + done, frames);
+        }
+        else if (active != nullptr)
+        {
+            underrunClip_[deck] = 0;
             player.render(active->audio.get(), active->timing.sourceFrameAt(t),
                           active->timing.sourceFrameAt(t + frames / sampleRate_), left + done, right + done, frames);
             // Automation is read once per segment; the mixer channel glides between blocks.

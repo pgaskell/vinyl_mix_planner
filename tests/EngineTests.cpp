@@ -31,6 +31,7 @@ struct Fixture
             map.push_back(i);
         engine.prepare(kRate, kBlock, map);
         engine.setMasterOutput(0);
+        engine.setClock([]() -> int64_t { return 0; }); // a slow test machine isn't an overload
     }
 
     Id addClip(std::shared_ptr<TrackAudio> track, int deck, double start, int pitch = 0)
@@ -194,14 +195,78 @@ TEST_CASE("Pause fades out and stops the playhead; seek moves it")
     CHECK(f.engine.playheadSeconds() == 5.0);
 }
 
-TEST_CASE("Clips without loaded audio are left out of the schedule")
+TEST_CASE("Clips without loaded audio play silence and are reported once")
 {
     Fixture f;
-    f.addClip(makeSine(1000.0, kRate, 10.0), 0, 0.0);
+    f.addClip(makeSine(1000.0, kRate, 10.0), 1, 0.25);
     f.audio.clear();
     f.publish();
     f.engine.play();
-    CHECK(peak(f.run(0.5)[0]) == 0.0f);
+    CHECK(peak(f.run(1.0)[0]) == 0.0f);
+
+    Glitch glitch;
+    REQUIRE(f.engine.popGlitch(glitch));
+    CHECK(glitch.kind == GlitchKind::NotLoaded);
+    CHECK(glitch.deck == 1);
+    CHECK(glitch.seconds == Approx(0.25).margin(kBlock / kRate));
+    CHECK_FALSE(f.engine.popGlitch(glitch));
+
+    // Reported again after a seek.
+    f.engine.seek(2.0);
+    f.run(0.1);
+    CHECK(f.engine.popGlitch(glitch));
+    CHECK_FALSE(f.engine.popGlitch(glitch));
+}
+
+namespace
+{
+int64_t fakeNanoseconds = 0;
+int64_t slowClock()
+{
+    return fakeNanoseconds += 8'000'000; // every reading 8 ms later: each block "takes" 8 ms
+}
+} // namespace
+
+TEST_CASE("Blocks that take longer than they last are reported as overloads, only while playing")
+{
+    Fixture f;
+    f.engine.setClock(slowClock);
+    f.addClip(makeSine(1000.0, kRate, 10.0), 0, 0.0);
+    f.publish();
+
+    f.run(0.1);
+    Glitch glitch;
+    CHECK_FALSE(f.engine.popGlitch(glitch)); // stopped: nothing audible to drop out
+
+    f.engine.play();
+    f.run(kBlock / kRate); // 512 frames last 10.7 ms: 8 ms is in time
+    CHECK_FALSE(f.engine.popGlitch(glitch));
+    CHECK(f.engine.takePeakLoad() == Approx(8.0 / (kBlock / kRate * 1e3)).epsilon(1e-3));
+
+    f.engine.prepare(kRate, 256, {0, 1, 2, 3}); // 5.3 ms blocks: 8 ms is late
+    for (int i = 0; i < 10; ++i)
+        f.run(256 / kRate, 4);
+    REQUIRE(f.engine.popGlitch(glitch));
+    CHECK(glitch.kind == GlitchKind::Overload);
+    CHECK(glitch.usedMs == Approx(8.0f));
+    CHECK(glitch.budgetMs == Approx(256 / kRate * 1e3));
+    CHECK_FALSE(f.engine.popGlitch(glitch)); // ten late blocks in a row are one glitch
+}
+
+TEST_CASE("The glitch queue keeps order and counts what it drops when full")
+{
+    SpscQueue<int, 4> queue;
+    for (int i = 0; i < 6; ++i)
+        queue.push(i);
+    CHECK(queue.takeDropped() == 2);
+    CHECK(queue.takeDropped() == 0);
+    int value = -1;
+    for (int i = 0; i < 4; ++i)
+    {
+        REQUIRE(queue.pop(value));
+        CHECK(value == i);
+    }
+    CHECK_FALSE(queue.pop(value));
 }
 
 TEST_CASE("Blocks larger than announced are rendered in chunks")

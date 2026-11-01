@@ -3,6 +3,8 @@
 #include "app/AnalysisCache.h"
 #include "app/AudioPool.h"
 #include "app/Display.h"
+#include "app/DriverDropouts.h"
+#include "app/GlitchPanel.h"
 #include "app/Inspector.h"
 #include "app/IssuesPanel.h"
 #include "app/LibraryPanel.h"
@@ -10,6 +12,7 @@
 #include "app/TimelineView.h"
 #include "core/Document.h"
 #include "engine/Engine.h"
+#include "engine/Prefetcher.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -67,6 +70,7 @@ private:
     void rebuildSchedule();
     void updateTitle();
     void updateDeviceInfo();
+    void collectGlitches();
 
     std::optional<double> addFile(const juce::File& file, int deck, double start);
     void addFileAtPlayhead(const juce::File& file);
@@ -118,6 +122,7 @@ private:
     uint64_t seenRevision_ = ~uint64_t{0};
 
     Engine engine_;
+    Prefetcher prefetcher_{engine_}; // after engine_: stops before the engine goes
     AnalysisCache analysisCache_;
     AudioPool pool_;
     juce::AudioDeviceManager deviceManager_;
@@ -129,6 +134,7 @@ private:
     MixerPanel mixer_;
     LibraryPanel library_;
     IssuesPanel issues_;
+    GlitchPanel glitches_;
     juce::TextEditor midiLog_;
     juce::TabbedComponent bottomTabs_{juce::TabbedButtonBar::TabsAtTop};
 
@@ -143,6 +149,12 @@ private:
     juce::ComboBox modeBox_, decksBox_;
     juce::TextButton settingsButton_{"Audio..."};
     juce::Label deviceLabel_;
+    GlitchLight glitchLight_;
+    DriverDropouts driverDropouts_;
+    int lastDropouts_ = 0;   // the driver's dropout count when last checked
+    float peakLoad_ = 0.0f;  // engine load over the current second
+    int loadTicks_ = 0;
+    juce::TooltipWindow tooltips_{this};
 
     juce::ScopedMessageBox messageBox_;
     std::unique_ptr<juce::FileChooser> chooser_;

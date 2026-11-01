@@ -16,6 +16,13 @@ namespace vmp
 class Deck
 {
 public:
+    // Requests within this distance of the deck's position are reached by slewing; beyond, it jumps.
+    static constexpr double kSlewWindowSeconds = 0.1;
+    // How far outside [startFrame, endFrame) a render() may read, in seconds of the track: the slew
+    // window plus the resampler's look-ahead (tens of frames). The engine only renders a clip whose
+    // audio is loaded this far around the requested range. Raising the slew window raises this.
+    static constexpr double kReadMarginSeconds = kSlewWindowSeconds + 0.05;
+
     Deck();
     ~Deck();
     Deck(const Deck&) = delete;
@@ -24,7 +31,8 @@ public:
     // Not real-time.
     void prepare(double deviceSampleRate, int maxBlockFrames);
 
-    // Plays source frames [startFrame, endFrame) of the track into numFrames output frames.
+    // Plays source frames [startFrame, endFrame) of the track into numFrames output frames. Reads only
+    // within kReadMarginSeconds of that range; if the audio there isn't loaded, the rest is silent.
     // If startFrame is close to where the deck actually is, it slews: it plays slightly faster
     // or slower until it catches up, like nudging a platter, so small edits during playback
     // (nudges, pitch changes) don't click. Anything further away, or another track, jumps.

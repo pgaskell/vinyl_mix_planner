@@ -16,8 +16,6 @@ std::unique_ptr<Schedule> buildSchedule(const Set& set, const AudioLookup& looku
         if (track == nullptr || clip.deck < 0 || clip.deck >= schedule->numDecks)
             continue;
         auto audio = lookup(*track);
-        if (audio == nullptr)
-            continue;
         ClipTiming timing(clip, *track);
         const double start = timing.startSeconds(), end = timing.endSeconds();
         schedule->lanes[static_cast<size_t>(clip.deck)].push_back({clip, start, end, std::move(timing), std::move(audio)});

@@ -21,6 +21,11 @@ namespace vmp
 // Decoded audio, waveform peaks and analysis for the set's tracks, keyed by file path. Decoding
 // and analysis run on background threads; listeners hear about it when a track finishes
 // loading or fails.
+//
+// Each file is decoded once into the decode cache (~21 MB per minute) and played from there by
+// streaming (engine/Prefetcher), so memory use doesn't grow with the length of the set. Waveform
+// peaks are cached beside it, so reopening a set needs no decoding at all. If the cache can't be
+// written (e.g. the disk is full), the track is kept in memory instead.
 class AudioPool : public juce::ChangeBroadcaster
 {
 public:
@@ -38,9 +43,13 @@ public:
         std::shared_ptr<const WaveformPeaks> peaks;
         TrackAnalysis analysis;
         juce::String error;
+        bool streamed = false; // from the decode cache; otherwise held in memory
     };
 
-    explicit AudioPool(AnalysisCache& cache);
+    // Oldest-used files beyond this are deleted from the decode cache.
+    static constexpr juce::int64 kCacheLimitBytes = juce::int64{10} << 30;
+
+    AudioPool(AnalysisCache& cache, juce::File cacheFolder);
     ~AudioPool() override;
 
     juce::AudioFormatManager& formats() { return formats_; }
@@ -64,6 +73,7 @@ private:
     void finished(const std::string& path, Entry entry, bool analysed);
 
     AnalysisCache& cache_;
+    juce::File cacheFolder_;
     juce::AudioFormatManager formats_;
     std::map<std::string, Entry> entries_;
     juce::ThreadPool pool_{2}; // declared after formats_ so jobs finish before it goes

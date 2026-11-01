@@ -65,7 +65,15 @@ DJM-900NXS2, and generic Core Audio devices).
 - All set changes go through `SetDocument::edit` with an `edit::` function (undo = whole-set snapshots;
   wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.
 - Mixer settings are stored as knob/fader positions (0..1), never gains: the mixer model maps them.
-- Known limitation: all track audio is decoded into memory (float). Long sets need disk streaming.
+- Track audio is decoded once into `~/Library/Caches/org.vinylmixplanner.app/Audio` (float, with
+  waveform peaks) and streamed: `engine/Prefetcher` preads chunks into a fixed, mlocked pool around
+  the playhead; the audio thread reads only published chunks (`TrackAudio::framesAt`), never a file
+  or a mapping. Freed chunks are reused only after `Engine::renderCounter()` shows no render can
+  still hold them. The app hands schedules to the prefetcher, never straight to the engine, so a
+  schedule's audio is loaded before it plays. If the read margin (`Deck::kReadMarginSeconds`) no
+  longer covers what Deck reads, playback reads unloaded chunks: keep them in step.
+- Glitches (engine overload, driver dropouts, missing or late audio) go through an SPSC queue to the
+  Glitches tab; anything that can make playback drop out should report one.
 - Analysis (`core/Analysis`): BPM/beat grid from spectral flux (tempo from full band, beat phase from
   <200 Hz), key from chroma vs Krumhansl-Kessler profiles. Results cached per file in
   `~/Library/Application Support/VinylMixPlanner/analysis.json`; bump `kAnalyserVersion` when the

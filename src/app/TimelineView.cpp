@@ -529,6 +529,25 @@ void TimelineView::paintRuler(juce::Graphics& g)
         g.drawText(formatTime(std::abs(t) < step / 2.0 ? 0.0 : t, step < 1.0), static_cast<int>(x) + 3, 6, 90,
                    kRulerHeight - 8, juce::Justification::centredLeft);
     }
+
+    // Glitches: small red triangles pointing down at the lanes.
+    g.setColour(juce::Colour(0xffff3b30));
+    const double firstVisible = xToTime(kHeaderWidth - 4), lastVisible = xToTime(getWidth() + 4);
+    for (double t : glitchMarks_)
+    {
+        if (t < firstVisible || t > lastVisible)
+            continue;
+        const auto x = static_cast<float>(timeToX(t));
+        juce::Path mark;
+        mark.addTriangle(x - 4.0f, kRulerHeight - 7.0f, x + 4.0f, kRulerHeight - 7.0f, x, kRulerHeight);
+        g.fillPath(mark);
+    }
+}
+
+void TimelineView::setGlitchMarks(std::vector<double> seconds)
+{
+    glitchMarks_ = std::move(seconds);
+    repaint(kHeaderWidth, 0, getWidth() - kHeaderWidth, kRulerHeight);
 }
 
 void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTiming& timing)

@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <vector>
 
 namespace vmp
@@ -25,11 +27,18 @@ public:
 
     explicit WaveformPeaks(const TrackAudio& audio);
 
+    // A small binary file, so reopening a set doesn't need the audio decoded again. load() returns
+    // nothing if the file is missing, unreadable, from another version or for a different length.
+    bool save(const std::filesystem::path& file) const;
+    static std::optional<WaveformPeaks> load(const std::filesystem::path& file, int64_t expectedFrames);
+
     // Peak levels over frames [first, last). Ranges shorter than the finest bin (16 frames)
     // return that bin.
     Bands range(int64_t first, int64_t last) const;
 
 private:
+    WaveformPeaks() = default;
+
     using Bin = std::array<uint8_t, 3>;
     struct Level
     {
@@ -37,7 +46,7 @@ private:
         std::vector<Bin> bins;
     };
 
-    int64_t frames_;
+    int64_t frames_ = 0;
     std::vector<Level> levels_; // finest first
 };
 

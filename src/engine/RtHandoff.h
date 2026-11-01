@@ -28,6 +28,9 @@ public:
     // Message thread. An object published but never picked up is simply replaced.
     void set(std::unique_ptr<T> object) { delete pending_.exchange(object.release()); }
 
+    // Any thread: whether an object has been set that the audio thread hasn't picked up yet.
+    bool hasPending() const { return pending_.load() != nullptr; }
+
     // Message thread.
     void collectGarbage() { delete retired_.exchange(nullptr); }
 
