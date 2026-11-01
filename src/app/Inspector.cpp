@@ -41,7 +41,7 @@ Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOption
     title_.setFont(juce::FontOptions(15.0f, juce::Font::bold));
     title_.setMinimumHorizontalScale(0.6f);
     addAndMakeVisible(title_);
-    for (auto* label : {&details_, &tempo_, &key_, &harmony_})
+    for (auto* label : {&details_, &tempo_, &key_, &harmonyWith_, &harmony_})
     {
         label->setJustificationType(juce::Justification::topLeft);
         label->setFont(juce::FontOptions(12.0f));
@@ -141,13 +141,13 @@ juce::String Inspector::harmonyText(const Clip& clip, const Track& track, juce::
         }
     }
     if (other == nullptr)
-        return "Not mixed with another track";
+        return "Not mixed with another track\n";
 
     const Track& otherTrack = *set.findTrack(other->trackId);
     const auto mine = pool_.keyFor(track), theirs = pool_.keyFor(otherTrack);
     const juce::String name = "Deck " + juce::String(other->deck + 1) + ": " + juce::String(juce::CharPointer_UTF8(otherTrack.title.c_str()));
     if (!mine || !theirs)
-        return "With " + name + ": key unknown";
+        return "With " + name + "\nkey unknown";
 
     // Compared as heard where the mix starts, after any pitch automation up to then.
     const auto a = pitchedKey(*mine, timing.speedAt(mixStart));
@@ -182,7 +182,7 @@ void Inspector::refresh()
         details_.setText("Drop audio files on a deck lane, or double-click a file in the library. "
                          "Keys 1-4 select the record on that deck at the playhead.",
                          juce::dontSendNotification);
-        for (auto* label : {&tempo_, &key_, &harmony_, &bpm_})
+        for (auto* label : {&tempo_, &key_, &harmonyWith_, &harmony_, &bpm_})
             label->setText({}, juce::dontSendNotification);
         keyBox_.clear(juce::dontSendNotification);
         return;
@@ -192,17 +192,11 @@ void Inspector::refresh()
     const double speed = clipTiming.speedAt(clipTiming.startSeconds()); // as it comes in
     title_.setText(juce::CharPointer_UTF8(track->title.c_str()), juce::dontSendNotification);
     juce::String details = "Deck " + juce::String(clip->deck + 1) + "   pressed at " + pressedText(track->pressed);
-    try
-    {
-        const ClipTiming timing(*clip, *track);
-        details << "\n" << formatTime(timing.startSeconds(), true) << " - " << formatTime(timing.endSeconds(), true)
-                << "  (record " << formatTime(static_cast<double>(clip->inFrame) / track->sampleRate, false) << " - "
-                << formatTime(static_cast<double>(clip->outFrame) / track->sampleRate, false) << ")";
-    }
-    catch (const std::invalid_argument& e)
-    {
-        details << "\n" << e.what();
-    }
+    // One fact per line, so each fits the panel's width.
+    details << "\nplays " << formatTime(clipTiming.startSeconds(), true) << " - "
+            << formatTime(clipTiming.endSeconds(), true) << "\nrecord "
+            << formatTime(static_cast<double>(clip->inFrame) / track->sampleRate, false) << " - "
+            << formatTime(static_cast<double>(clip->outFrame) / track->sampleRate, false);
     details_.setText(details, juce::dontSendNotification);
 
     // Tempo.
@@ -223,7 +217,7 @@ void Inspector::refresh()
     // Key.
     const auto detected = entry != nullptr ? entry->analysis.key : std::nullopt;
     keyBox_.clear(juce::dontSendNotification);
-    keyBox_.addItem("Detected" + (detected ? ": " + keyText(*detected, display_.keyNotation) : juce::String()),
+    keyBox_.addItem("Auto" + (detected ? ": " + keyText(*detected, display_.keyNotation) : juce::String()),
                     kDetectedKeyId);
     for (int minor = 1; minor >= 0; --minor)
         for (int tonic = 0; tonic < 12; ++tonic)
@@ -235,8 +229,11 @@ void Inspector::refresh()
     else
         key_.setText(analysing ? "analysing..." : "unknown", juce::dontSendNotification);
 
+    // "With <track>" on one line, the verdict on the next.
     auto colour = juce::Colours::lightgrey;
-    harmony_.setText(harmonyText(*clip, *track, colour), juce::dontSendNotification);
+    const auto harmony = juce::StringArray::fromLines(harmonyText(*clip, *track, colour));
+    harmonyWith_.setText(harmony[0], juce::dontSendNotification);
+    harmony_.setText(harmony[1], juce::dontSendNotification);
     harmony_.setColour(juce::Label::textColourId, colour);
 
 }
@@ -289,8 +286,10 @@ void Inspector::resized()
             item->setBounds(r.removeFromLeft(width).reduced(1, 0));
     };
 
+    // Text rows are exactly as many lines high as they hold: a label squeezes a long line to fit
+    // rather than wrapping it out of sight. kPreferredHeight is the sum of these rows.
     title_.setBounds(row(22));
-    details_.setBounds(row(32));
+    details_.setBounds(row(45));
 
     tempoCaption_.setBounds(row(16));
     auto tempoRow = row(22);
@@ -303,7 +302,8 @@ void Inspector::resized()
     auto keyRow = row(22);
     keyBox_.setBounds(keyRow.removeFromLeft(110));
     key_.setBounds(keyRow.withTrimmedLeft(6));
-    harmony_.setBounds(row(30));
+    harmonyWith_.setBounds(row(15));
+    harmony_.setBounds(row(15));
 
     nudgeCaption_.setBounds(row(16));
     buttonRow(row(22), {&barsBack_, &beatBack_, &beatForward_, &barsForward_});

@@ -18,6 +18,9 @@ public:
     Inspector(SetDocument& document, AudioPool& pool, const DisplayOptions& display,
               juce::ApplicationCommandManager& commands);
 
+    // Height that shows everything.
+    static constexpr int kPreferredHeight = 380;
+
     void setClip(Id clipId);
     // The set, the loaded audio or the display options changed.
     void refresh();
@@ -52,7 +55,7 @@ private:
     juce::TextButton halve_{"/2"}, double_{"x2"}, gridEarlier_{"<"}, gridLater_{">"}, downbeat_{"Downbeat here"},
         gridReset_{"Reset"};
 
-    juce::Label keyCaption_, key_, harmony_;
+    juce::Label keyCaption_, key_, harmonyWith_, harmony_;
     juce::ComboBox keyBox_;
 
     juce::Label nudgeCaption_;

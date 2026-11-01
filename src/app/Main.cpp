@@ -15,7 +15,7 @@ public:
         content_ = new MainComponent(settings);
         setContentOwned(content_, true);
         setResizable(true, true);
-        setResizeLimits(1000, 600, 6000, 4000);
+        setResizeLimits(1000, 760, 6000, 4000); // room for the inspector and the mixer strips
         centreWithSize(getWidth(), getHeight());
         setVisible(true);
     }

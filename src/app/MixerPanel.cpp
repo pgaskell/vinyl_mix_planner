@@ -108,7 +108,20 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
     title_.setText(track != nullptr ? title : "-", juce::dontSendNotification);
     key_.setText(key, juce::dontSendNotification);
     if (track == nullptr)
+    {
+        // Nothing on this deck here: neutral and greyed out, not the last clip's values.
+        for (auto* slider : {&pitch_, &volume_, &high_, &mid_, &low_})
+        {
+            slider->setColour(juce::Slider::thumbColourId, getLookAndFeel().findColour(juce::Slider::thumbColourId));
+            slider->setColour(juce::Slider::rotarySliderFillColourId,
+                              getLookAndFeel().findColour(juce::Slider::rotarySliderFillColourId));
+        }
+        pitch_.setValue(0.0, juce::dontSendNotification);
+        volume_.setValue(1.0, juce::dontSendNotification);
+        for (auto* knob : {&high_, &mid_, &low_})
+            knob->setValue(0.5, juce::dontSendNotification);
         return;
+    }
 
     // Values at the playhead, or at the nearer end of the clip when the playhead is outside it.
     const ClipTiming timing(*clip, *track);
@@ -117,9 +130,11 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
 
     auto showValue = [&](juce::Slider& slider, Param param, double value) {
         const bool automated = !clip->points(param).empty();
-        const auto colour = automated ? kAutomatedColour : getLookAndFeel().findColour(juce::Slider::thumbColourId);
-        slider.setColour(juce::Slider::thumbColourId, colour);
-        slider.setColour(juce::Slider::rotarySliderFillColourId, colour);
+        slider.setColour(juce::Slider::thumbColourId,
+                         automated ? kAutomatedColour : getLookAndFeel().findColour(juce::Slider::thumbColourId));
+        slider.setColour(juce::Slider::rotarySliderFillColourId,
+                         automated ? kAutomatedColour
+                                   : getLookAndFeel().findColour(juce::Slider::rotarySliderFillColourId));
         if (!slider.isMouseButtonDown()) // don't fight the user's drag
             slider.setValue(value, juce::dontSendNotification);
     };

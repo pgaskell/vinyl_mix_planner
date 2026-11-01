@@ -1317,7 +1317,7 @@ void MainComponent::resized()
 
     library_.setBounds(area.removeFromLeft(220));
     auto right = area.removeFromRight(std::max(250, MixerPanel::preferredWidth(document_.set().numDecks)));
-    inspector_.setBounds(right.removeFromTop(325));
+    inspector_.setBounds(right.removeFromTop(Inspector::kPreferredHeight));
     mixer_.setBounds(right);
     bottomTabs_.setBounds(area.removeFromBottom(130));
     timeline_.setBounds(area);
