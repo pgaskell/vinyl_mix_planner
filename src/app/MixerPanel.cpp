@@ -51,7 +51,7 @@ ChannelStrip::ChannelStrip(int deck, SetDocument& document, std::function<double
         knob->setPopupDisplayEnabled(true, true, nullptr);
     }
 
-    // + toward the DJ (bottom), as on the 1200. 0.05% steps.
+    // + toward the DJ (bottom), as on the 1200, in kPitchStepPercent steps.
     setUpControl(pitch_, pitchLabel_, Param::Pitch);
     pitch_.setSliderStyle(juce::Slider::LinearVertical);
     pitch_.setNormalisableRange(juce::NormalisableRange<double>(
@@ -94,7 +94,12 @@ void ChannelStrip::apply(Param param, double value)
 {
     const Id id = clip_;
     const double playhead = playhead_();
-    document_.edit([&](Set& s) { return edit::setParamAt(s, id, param, value, playhead); });
+    if (param == Param::Pitch) // the records mixed in after this one keep up
+        document_.edit([&](Set& s) {
+            return edit::withFollowers(s, id, [&](Set& t) { return edit::setParamAt(t, id, param, value, playhead); });
+        });
+    else
+        document_.edit([&](Set& s) { return edit::setParamAt(s, id, param, value, playhead); });
 }
 
 void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, const juce::String& key)

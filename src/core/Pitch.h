@@ -6,10 +6,13 @@
 namespace vmp
 {
 
-// SL-1200MK2 pitch fader: ±8%, modelled on a 0.05% grid. Pitch is stored as an integer
-// number of steps so planned values never drift off the grid through float arithmetic.
-inline constexpr double kPitchStepPercent = 0.05;
-inline constexpr int kMaxPitchSteps = 160; // 8.00%
+// SL-1200MK2 pitch fader: ±8%, modelled on a 0.02% grid. The real fader is analog; the grid is
+// fine enough that two records matched on it drift apart by only ~6 ms over a 30 s mix, the
+// kind of error a DJ rides out by ear. Pitch is stored as a number of steps so planned values
+// stay on the grid. Set files record the step size, so it can change (sets made at 0.05% are
+// converted on load).
+inline constexpr double kPitchStepPercent = 0.02;
+inline constexpr int kMaxPitchSteps = 400; // 8.00%
 
 inline int clampPitchSteps(int steps)
 {

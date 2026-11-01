@@ -21,7 +21,7 @@ constexpr int kMenuNone = 99;
 
 constexpr double kNudgeSeconds = 0.010;
 constexpr double kFineNudgeSeconds = 0.001;
-constexpr int kCoarsePitchSteps = 10; // 0.5%
+const int kCoarsePitchSteps = pitchStepsFromPercent(0.5);
 constexpr double kGridShiftSeconds = 0.002;
 constexpr double kGridBpmStep = 0.01;
 constexpr int kMidiLogLines = 300;
@@ -450,7 +450,10 @@ void MainComponent::nudgeSelected(double seconds)
     const Id id = sel.clip->id;
     const double start = sel.clip->startSeconds + seconds;
     const int deck = sel.clip->deck;
-    document_.edit([&](Set& s) { return edit::moveClip(s, id, start, deck); });
+    // The records mixed in after this one move with it.
+    document_.edit([&](Set& s) {
+        return edit::withFollowers(s, id, [&](Set& t) { return edit::moveClip(t, id, start, deck); });
+    });
 }
 
 void MainComponent::nudgeSelectedByBeats(int beats)
@@ -476,7 +479,9 @@ void MainComponent::changeSelectedPitch(int steps, bool absolute)
     const double t = std::clamp(playhead, sel.timing->startSeconds(), sel.timing->endSeconds());
     const double current = std::round(pitchStepsFromSpeed(sel.timing->speedAt(t)));
     const double pitch = absolute ? steps : current + steps;
-    document_.edit([&](Set& s) { return edit::setParamAt(s, id, Param::Pitch, pitch, playhead); });
+    document_.edit([&](Set& s) {
+        return edit::withFollowers(s, id, [&](Set& inner) { return edit::setParamAt(inner, id, Param::Pitch, pitch, playhead); });
+    });
 }
 
 void MainComponent::editSelectedGrid(
@@ -756,7 +761,7 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
     const auto alt = juce::ModifierKeys::altModifier;
     const bool hasClip = static_cast<bool>(selection());
 
-    auto define = [&](const char* name, const char* description, const char* category, bool active = true) {
+    auto define = [&](const juce::String& name, const char* description, const char* category, bool active = true) {
         info.setInfo(name, description, category, 0);
         info.setActive(active);
     };
@@ -855,11 +860,13 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         key(KeyPress::rightKey, alt);
         break;
     case kPitchUp:
-        define("Pitch +0.05%", "Speed up the selected record by one step", "Clip", hasClip);
+        define("Pitch +" + juce::String(kPitchStepPercent) + "%", "Speed up the selected record by one step", "Clip",
+               hasClip);
         key(KeyPress::upKey);
         break;
     case kPitchDown:
-        define("Pitch -0.05%", "Slow down the selected record by one step", "Clip", hasClip);
+        define("Pitch -" + juce::String(kPitchStepPercent) + "%", "Slow down the selected record by one step", "Clip",
+               hasClip);
         key(KeyPress::downKey);
         break;
     case kPitchUpCoarse:

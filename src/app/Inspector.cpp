@@ -89,9 +89,9 @@ Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOption
     // --- Pitch steps (the fader itself is in the mixer panel) ---
     setCaption(pitchCaption_, "PITCH");
     addAndMakeVisible(pitchCaption_);
-    setUpCommandButton(pitchDown_, kPitchDown, "Pitch down 0.05%");
+    setUpCommandButton(pitchDown_, kPitchDown, "Pitch down " + juce::String(kPitchStepPercent) + "%");
     setUpCommandButton(pitchZero_, kPitchReset, "Pitch to 0 (quartz lock)");
-    setUpCommandButton(pitchUp_, kPitchUp, "Pitch up 0.05%");
+    setUpCommandButton(pitchUp_, kPitchUp, "Pitch up " + juce::String(kPitchStepPercent) + "%");
 
     refresh();
 }

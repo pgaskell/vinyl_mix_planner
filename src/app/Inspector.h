@@ -3,6 +3,7 @@
 #include "app/AudioPool.h"
 #include "app/Display.h"
 #include "core/Document.h"
+#include "core/Pitch.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -63,7 +64,8 @@ private:
     juce::TextButton back10_{"-10 ms"}, back1_{"-1 ms"}, forward1_{"+1 ms"}, forward10_{"+10 ms"};
 
     juce::Label pitchCaption_;
-    juce::TextButton pitchDown_{"-0.05"}, pitchZero_{"0"}, pitchUp_{"+0.05"};
+    juce::TextButton pitchDown_{"-" + juce::String(kPitchStepPercent)}, pitchZero_{"0"},
+        pitchUp_{"+" + juce::String(kPitchStepPercent)};
 };
 
 } // namespace vmp

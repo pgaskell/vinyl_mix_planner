@@ -52,7 +52,7 @@ size_t count(const std::vector<Issue>& issues, Issue::Severity severity)
 TEST_CASE("Clip length on the timeline depends on pitch")
 {
     auto set = makeSet();
-    const auto& clip = addClip(set, 1, 0, 100.0, 0.0, 60.0, 80); // +4%
+    const auto& clip = addClip(set, 1, 0, 100.0, 0.0, 60.0, 200); // +4%
     const ClipTiming timing(clip, *set.findTrack(1));
     CHECK(timing.endSeconds() == Approx(100.0 + 60.0 / 1.04));
 }
@@ -62,7 +62,7 @@ TEST_CASE("Clip timing maps between timeline and source frames")
     auto set = makeSet();
     auto& clip = addClip(set, 1, 0, 100.0, 10.0, 200.0);
     // Hold 0% to 40 s of music, then slide to +6% by 46.18 s (6 s at an average of +3%).
-    clip.points(Param::Pitch) = {{frames(40.0), 0.0}, {frames(40.0 + 6.0 * 1.03), 120.0}};
+    clip.points(Param::Pitch) = {{frames(40.0), 0.0}, {frames(40.0 + 6.0 * 1.03), 300.0}};
     const ClipTiming timing(clip, *set.findTrack(1));
 
     CHECK(timing.sourceFrameAt(100.0) == Approx(static_cast<double>(frames(10.0))));
@@ -76,7 +76,7 @@ TEST_CASE("Trimming the in-point keeps pitch automation on the same part of the 
 {
     auto set = makeSet();
     auto& full = addClip(set, 1, 0, 0.0, 0.0, 300.0);
-    full.points(Param::Pitch) = {{frames(120.0), 0.0}, {frames(128.0), 100.0}};
+    full.points(Param::Pitch) = {{frames(120.0), 0.0}, {frames(128.0), 250.0}};
     auto trimmed = full;
     trimmed.inFrame = frames(60.0);
     trimmed.startSeconds = 500.0;
@@ -165,11 +165,11 @@ TEST_CASE("Structural problems are errors")
     }
     SECTION("pitch beyond +/-8%")
     {
-        addClip(set, 1, 0, 0.0, 0.0, 100.0, 161);
+        addClip(set, 1, 0, 0.0, 0.0, 100.0, 401);
     }
     SECTION("pitch keypoint beyond +/-8%")
     {
-        addClip(set, 1, 0, 0.0, 0.0, 100.0).points(Param::Pitch).push_back({frames(10.0), -200.0});
+        addClip(set, 1, 0, 0.0, 0.0, 100.0).points(Param::Pitch).push_back({frames(10.0), -500.0});
     }
     const auto issues = validate(set);
     REQUIRE(issues.size() == 1);

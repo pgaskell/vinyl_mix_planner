@@ -60,7 +60,7 @@ struct ChannelSettings
 // The controls that can be automated during a clip.
 enum class Param
 {
-    Pitch,  // in 0.05% steps
+    Pitch,  // in kPitchStepPercent steps
     Volume, // channel fader position, 0..1
     High,   // EQ knob positions, 0..1, centre 0.5
     Mid,

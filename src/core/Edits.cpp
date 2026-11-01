@@ -55,7 +55,7 @@ double clampValue(Param param, double value)
 {
     const auto range = paramRange(param);
     if (param == Param::Pitch)
-        value = std::round(value); // whole 0.05% steps
+        value = std::round(value); // whole steps
     return std::clamp(value, range.min, range.max);
 }
 
@@ -345,6 +345,107 @@ bool setTrackKey(Set& set, Id trackId, std::optional<MusicalKey> key)
     if (it == set.tracks.end())
         return false;
     it->key = key;
+    return true;
+}
+
+namespace
+{
+// Shifts the clip's pitch (starting value and every keypoint) by whole steps, within range.
+void shiftPitch(Clip& clip, int steps)
+{
+    const auto shifted = [steps](double value) {
+        return std::clamp(value + steps, double(-kMaxPitchSteps), double(kMaxPitchSteps));
+    };
+    clip.pitchSteps = shifted(clip.pitchSteps);
+    for (auto& point : clip.points(Param::Pitch))
+        point.value = shifted(point.value);
+}
+} // namespace
+
+bool withFollowers(Set& set, Id clipId, const std::function<bool(Set&)>& change)
+{
+    const Set before = set;
+    if (!change(set))
+        return false;
+
+    struct Old
+    {
+        const Clip* clip;
+        ClipTiming timing;
+    };
+    std::vector<Old> old; // the set before the change, in start order
+    for (const auto& clip : before.clips)
+        if (const Track* track = before.findTrack(clip.trackId))
+            if (auto timing = timingFor(clip, *track))
+                old.push_back({&clip, *timing});
+    std::stable_sort(old.begin(), old.end(),
+                     [](const Old& a, const Old& b) { return a.timing.startSeconds() < b.timing.startSeconds(); });
+
+    auto edited = std::find_if(old.begin(), old.end(), [clipId](const Old& o) { return o.clip->id == clipId; });
+    if (edited == old.end())
+        return true;
+    std::vector<Id> moved{clipId}; // the edited clip and its followers so far
+    auto isMoved = [&](Id id) { return std::find(moved.begin(), moved.end(), id) != moved.end(); };
+    auto newTiming = [&](Id id) -> std::optional<ClipTiming> {
+        const Clip* clip = findClip(set, id);
+        const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+        return track != nullptr ? timingFor(*clip, *track) : std::nullopt;
+    };
+
+    for (auto x = std::next(edited); x != old.end(); ++x)
+    {
+        const double start = x->timing.startSeconds();
+        if (start <= edited->timing.startSeconds())
+            continue;
+
+        // What it mixes into: the most recent clip on another deck still playing when it starts.
+        const Old* parent = nullptr;
+        for (auto c = old.begin(); c != x; ++c)
+            if (c->clip->deck != x->clip->deck && c->timing.startSeconds() < start && start < c->timing.endSeconds())
+                parent = &*c;
+
+        Clip* clip = findClip(set, x->clip->id);
+        if (clip == nullptr)
+            continue;
+
+        if (parent != nullptr)
+        {
+            const auto parentNow = newTiming(parent->clip->id);
+            if (!isMoved(parent->clip->id) || !parentNow)
+                continue;
+            // Keep the two records' music together in the middle of the overlap.
+            const double anchor = 0.5 * (start + std::min(parent->timing.endSeconds(), x->timing.endSeconds()));
+            const double parentFrame = parent->timing.sourceFrameAt(anchor);
+            const double ownFrame = x->timing.sourceFrameAt(anchor);
+            const double anchorNow = parentNow->timelineSecondsAt(parentFrame);
+
+            const double ratio = parentNow->speedAt(anchorNow) / parent->timing.speedAt(anchor);
+            const double ownSteps = pitchStepsFromSpeed(x->timing.speedAt(anchor));
+            const auto steps = static_cast<int>(std::lround(pitchStepsFromSpeed(x->timing.speedAt(anchor) * ratio) - ownSteps));
+            shiftPitch(*clip, steps);
+
+            const auto ownNow = newTiming(clip->id);
+            if (!ownNow)
+                continue;
+            clip->startSeconds += anchorNow - ownNow->timelineSecondsAt(ownFrame);
+        }
+        else
+        {
+            // After a gap: keep the gap to whatever ended last before it.
+            const Old* previous = nullptr;
+            for (auto c = old.begin(); c != x; ++c)
+                if (c->timing.endSeconds() <= start &&
+                    (previous == nullptr || c->timing.endSeconds() > previous->timing.endSeconds()))
+                    previous = &*c;
+            if (previous == nullptr || !isMoved(previous->clip->id))
+                continue;
+            const auto previousNow = newTiming(previous->clip->id);
+            if (!previousNow)
+                continue;
+            clip->startSeconds += previousNow->endSeconds() - previous->timing.endSeconds();
+        }
+        moved.push_back(clip->id);
+    }
     return true;
 }
 

@@ -74,7 +74,7 @@ struct Fixture
 TEST_CASE("A clip starts at its timeline position and plays at its pitch")
 {
     Fixture f;
-    f.addClip(makeSine(1000.0, kRate, 10.0), 0, 1.0, 160);
+    f.addClip(makeSine(1000.0, kRate, 10.0), 0, 1.0, 400);
     f.publish();
     f.engine.play();
 
@@ -89,7 +89,7 @@ TEST_CASE("Playback lands on the timeline where the clip timing says")
     Fixture f;
     auto track = makeTrack(44100.0, 5.0);
     track->interleaved[88200 * 2] = track->interleaved[88200 * 2 + 1] = 1.0f;
-    f.addClip(track, 0, 0.5, 160);
+    f.addClip(track, 0, 0.5, 400);
     f.publish();
     f.engine.play();
 

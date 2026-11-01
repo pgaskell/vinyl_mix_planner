@@ -10,7 +10,8 @@ namespace vmp
 {
 
 // 2: per-control automation keypoints (1 had unused "pitchMoves"). Older versions still load.
-inline constexpr int kSetFormatVersion = 2;
+// 3: pitch in 0.02% steps, with the step size written in the file ("pitchStepPercent").
+inline constexpr int kSetFormatVersion = 3;
 inline constexpr const char* kSetFileExtension = ".vmpset";
 
 class SetFileError : public std::runtime_error

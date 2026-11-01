@@ -2,6 +2,7 @@
 
 #include "core/Set.h"
 
+#include <functional>
 #include <optional>
 
 namespace vmp::edit
@@ -57,6 +58,17 @@ bool setStartValue(Set& set, Id clipId, Param param, double value);
 // value; with keypoints it sets one at the music under the playhead (so moving a control while
 // playing records automation). Pitch changes keep the music under the playhead in place.
 bool setParamAt(Set& set, Id clipId, Param param, double value, double playheadSeconds);
+
+// --- Keeping the rest of the mix in step ---
+
+// Applies `change` (an edit of clip `clipId`, such as a nudge or a pitch change), then moves the
+// clips after it so the mix stays as it was:
+// - A clip that mixes in while a moved clip is playing keeps its music on that clip's music: it
+//   is moved, and its pitch changed by the same ratio (to the nearest step, automation too), so
+//   their beats stay together through the transition.
+// - A clip that starts after a gap keeps the gap.
+// Clips that mix into a follower follow in turn. Clips starting before the edited one stay put.
+bool withFollowers(Set& set, Id clipId, const std::function<bool(Set&)>& change);
 
 bool setNumDecks(Set& set, int numDecks);
 

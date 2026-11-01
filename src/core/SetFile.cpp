@@ -1,8 +1,11 @@
 #include "core/SetFile.h"
 
+#include "core/Pitch.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 
@@ -107,6 +110,7 @@ std::string setToJson(const Set& set)
 
     const json doc = {{"format", kFormatName},
                       {"version", kSetFormatVersion},
+                      {"pitchStepPercent", kPitchStepPercent},
                       {"name", set.name},
                       {"decks", set.numDecks},
                       {"nextId", set.nextId},
@@ -165,6 +169,12 @@ Set setFromJson(const std::string& text)
             set.tracks.push_back(std::move(track));
         }
 
+        // Pitch is stored in steps; sets from before version 3 used 0.05% steps. Converted
+        // exactly (an old step is 2.5 new ones), so old sets sound the same.
+        const double pitchScale = doc.value("pitchStepPercent", 0.05) / kPitchStepPercent;
+        if (!(pitchScale > 0.0) || !std::isfinite(pitchScale))
+            throw SetFileError("invalid pitch step size");
+
         for (const auto& c : doc.at("clips"))
         {
             Clip clip;
@@ -174,7 +184,7 @@ Set setFromJson(const std::string& text)
             clip.startSeconds = c.at("start").get<double>();
             clip.inFrame = c.at("in").get<int64_t>();
             clip.outFrame = c.at("out").get<int64_t>();
-            clip.pitchSteps = c.at("pitchSteps").get<double>();
+            clip.pitchSteps = c.at("pitchSteps").get<double>() * pitchScale;
             // Version 1 had "pitchMoves" instead, which the app never let you create: ignored.
             if (c.contains("automation"))
                 for (int p = 0; p < kNumParams; ++p)
@@ -182,8 +192,9 @@ Set setFromJson(const std::string& text)
                     const auto param = static_cast<Param>(p);
                     if (!c["automation"].contains(paramKey(param)))
                         continue;
+                    const double scale = param == Param::Pitch ? pitchScale : 1.0;
                     for (const auto& point : c["automation"][paramKey(param)])
-                        clip.points(param).push_back({point.at(0).get<int64_t>(), point.at(1).get<double>()});
+                        clip.points(param).push_back({point.at(0).get<int64_t>(), point.at(1).get<double>() * scale});
                     std::stable_sort(clip.points(param).begin(), clip.points(param).end(),
                                      [](const auto& a, const auto& b) { return a.sourceFrame < b.sourceFrame; });
                 }

@@ -1,5 +1,6 @@
 #include "core/SetFile.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -7,6 +8,7 @@
 #include <fstream>
 
 using namespace vmp;
+using Catch::Approx;
 using Catch::Matchers::ContainsSubstring;
 
 namespace
@@ -79,9 +81,9 @@ TEST_CASE("Missing files and bad content raise SetFileError")
 TEST_CASE("Files from a newer version are refused rather than half-read")
 {
     auto text = setToJson(makeSet());
-    const auto at = text.find("\"version\": 2");
+    const auto at = text.find("\"version\": 3");
     REQUIRE(at != std::string::npos);
-    text.replace(at, 12, "\"version\": 3");
+    text.replace(at, 12, "\"version\": 4");
     CHECK_THROWS_WITH(setFromJson(text), ContainsSubstring("newer version"));
 }
 
@@ -111,7 +113,30 @@ TEST_CASE("Version 1 sets still open")
                    "pitchMoves": [], "mixer": {"fader": 1.0, "high": 0.5, "mid": 0.5, "low": 0.25}}]})";
     const auto set = setFromJson(v1);
     REQUIRE(set.clips.size() == 1);
-    CHECK(set.clips[0].pitchSteps == 20);
+    CHECK(set.clips[0].pitchSteps == 50); // 1% in the old 0.05% steps is 50 of today's
     CHECK(set.clips[0].mixer.low == 0.25);
     CHECK(set.clips[0].points(Param::Pitch).empty());
+}
+
+TEST_CASE("Version 2 sets keep their pitch exactly, automation included, in today's finer steps")
+{
+    const std::string v2 = R"({"format": "vinyl-mix-planner-set", "version": 2, "name": "old", "decks": 2,
+        "nextId": 3,
+        "tracks": [{"id": 1, "path": "/a.wav", "title": "A", "frames": 441000, "sampleRate": 44100.0,
+                    "pressed": "unknown"}],
+        "clips": [{"id": 2, "track": 1, "deck": 0, "start": 1.5, "in": 0, "out": 441000, "pitchSteps": 3,
+                   "automation": {"pitch": [[1000, -160], [2000, 1]], "volume": [[1000, 0.5]]},
+                   "mixer": {"fader": 1.0, "high": 0.5, "mid": 0.5, "low": 0.5}}]})";
+    const auto set = setFromJson(v2);
+    REQUIRE(set.clips.size() == 1);
+    const auto& clip = set.clips[0];
+    CHECK(clip.pitchSteps == Approx(7.5)); // 0.15%
+    CHECK(clip.points(Param::Pitch)[0].value == Approx(-400.0));
+    CHECK(clip.points(Param::Pitch)[1].value == Approx(2.5));
+    REQUIRE(clip.points(Param::Volume).size() == 1);
+    CHECK(clip.points(Param::Volume)[0].value == 0.5); // other controls untouched
+
+    // Saved again, it reads back the same.
+    const auto again = setFromJson(setToJson(set));
+    CHECK(again.clips[0].pitchSteps == Approx(7.5));
 }

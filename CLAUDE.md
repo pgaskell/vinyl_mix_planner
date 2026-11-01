@@ -35,7 +35,7 @@ DJM-900NXS2, and generic Core Audio devices).
 - DAW-style timeline: per-deck lanes, waveform clips you can move/trim; drag files onto a lane.
   No global tempo grid: tracks aren't perfectly on a grid themselves.
 - Simple library to browse files.
-- Pitch: one setting per track (±8%, 0.05% steps, 0 = quartz lock), with optional automated pitch
+- Pitch: one setting per track (±8%, 0.02% steps, 0 = quartz lock), with optional automated pitch
   changes where they help a transition. Pitch shifts key (resampling, never time-stretch).
 - 33/45 is only a label; the user often won't know it. No wrong-speed playback initially.
 - Mixer is modular so other mixers can be emulated later. Start with a basic mixer
@@ -64,6 +64,8 @@ DJM-900NXS2, and generic Core Audio devices).
 - `ClipTiming` is the only place that maps timeline <-> source; UI and engine must both use it.
 - All set changes go through `SetDocument::edit` with an `edit::` function (undo = whole-set snapshots;
   wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.
+- Nudges and pitch changes made from the UI go through `edit::withFollowers`, so the clips mixed in
+  after the edited one move and re-pitch with it. Timeline drags (arranging) don't.
 - Mixer settings are stored as knob/fader positions (0..1), never gains: the mixer model maps them.
 - Track audio is decoded once into `~/Library/Caches/org.vinylmixplanner.app/Audio` (float, with
   waveform peaks) and streamed: `engine/Prefetcher` preads chunks into a fixed, mlocked pool around

@@ -1,5 +1,6 @@
 #include "core/Document.h"
 #include "core/Edits.h"
+#include "core/Pitch.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -68,7 +69,7 @@ TEST_CASE("Trimming the start keeps the music in place")
 {
     auto set = makeSet();
     const Id id = edit::addClip(set, set.tracks.front().id, 0, 100.0);
-    REQUIRE(edit::setClipPitch(set, id, 80)); // +4%
+    REQUIRE(edit::setClipPitch(set, id, 200)); // +4%
 
     REQUIRE(edit::trimClipStart(set, id, 110.0));
     const auto& clip = onlyClip(set);
@@ -86,7 +87,7 @@ TEST_CASE("Trimming the start past pitch keypoints keeps the music in place")
 {
     auto set = makeSet();
     const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
-    set.clips.front().points(Param::Pitch) = {{frames(60.0), 0.0}, {frames(70.0), 100.0}};
+    set.clips.front().points(Param::Pitch) = {{frames(60.0), 0.0}, {frames(70.0), 250.0}};
     const ClipTiming before(onlyClip(set), set.tracks.front());
     const double later = before.timelineSecondsAt(static_cast<double>(frames(100.0)));
 
@@ -121,9 +122,9 @@ TEST_CASE("Pitch keypoints are whole steps within +/-8%")
     auto set = makeSet();
     const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
     REQUIRE(edit::setAutomationPoint(set, id, Param::Pitch, 1000, 12.4));
-    REQUIRE(edit::setAutomationPoint(set, id, Param::Pitch, 2000, 900.0));
+    REQUIRE(edit::setAutomationPoint(set, id, Param::Pitch, 2000, 2000.0));
     CHECK(onlyClip(set).points(Param::Pitch)[0].value == 12.0);
-    CHECK(onlyClip(set).points(Param::Pitch)[1].value == 160.0);
+    CHECK(onlyClip(set).points(Param::Pitch)[1].value == kMaxPitchSteps);
 }
 
 TEST_CASE("Clearing automation keeps the value the clip started with")
@@ -166,7 +167,7 @@ TEST_CASE("Writing pitch automation keeps the music under the playhead in place"
     edit::setAutomationPoint(set, id, Param::Pitch, 0, 0.0);
     const double frameAtPlayhead = ClipTiming(onlyClip(set), set.tracks.front()).sourceFrameAt(70.0);
 
-    REQUIRE(edit::setParamAt(set, id, Param::Pitch, 80.0, 70.0));
+    REQUIRE(edit::setParamAt(set, id, Param::Pitch, 200.0, 70.0));
     CHECK(ClipTiming(onlyClip(set), set.tracks.front()).sourceFrameAt(70.0) == Approx(frameAtPlayhead).margin(0.5));
 }
 
@@ -187,7 +188,7 @@ TEST_CASE("Pitch and mixer values are clamped to the hardware's range")
     auto set = makeSet();
     const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
     REQUIRE(edit::setClipPitch(set, id, 999));
-    CHECK(onlyClip(set).pitchSteps == 160);
+    CHECK(onlyClip(set).pitchSteps == kMaxPitchSteps);
     REQUIRE(edit::setClipMixer(set, id, {1.5, -0.2, 0.5, 0.25}));
     CHECK(onlyClip(set).mixer == ChannelSettings{1.0, 0.0, 0.5, 0.25});
 }
@@ -272,7 +273,7 @@ TEST_CASE("Changing pitch with a pivot keeps the music under the playhead in pla
     const Id id = edit::addClip(set, set.tracks.front().id, 0, 100.0);
 
     // 60 s into the clip the record is at 60 s. At +4% it must still be there at 160 s.
-    REQUIRE(edit::setClipPitch(set, id, 80, 160.0));
+    REQUIRE(edit::setClipPitch(set, id, 200, 160.0)); // +4%
     const auto& clip = onlyClip(set);
     CHECK(clip.startSeconds == Approx(160.0 - 60.0 / 1.04));
     const ClipTiming timing(clip, *set.findTrack(clip.trackId));
@@ -324,4 +325,87 @@ TEST_CASE("The starting point can be moved, and a control at the needle drop mov
     REQUIRE(edit::setParamAt(set, id, Param::High, 0.1, 10.0)); // playhead at the needle drop
     CHECK(onlyClip(set).mixer.high == 0.1);
     CHECK(onlyClip(set).points(Param::High).size() == 1);
+}
+
+namespace
+{
+// A chain of 5-minute records mixed with 30 s overlaps: before (deck 1) at 0 s, then the edited
+// clip (deck 0) at 270 s, its incoming (deck 1) at 540 s, the next on deck 0 at 810 s, and one
+// after a 20 s gap at 1130 s.
+struct Chain
+{
+    Set set;
+    Id before, edited, incoming, next, afterGap;
+
+    Chain()
+    {
+        const Id track = edit::addTrack(set, {0, "/a.flac", "A", frames(300.0), kRate, PressedSpeed::Unknown, {}, {}});
+        before = edit::addClip(set, track, 1, 0.0);
+        edited = edit::addClip(set, track, 0, 270.0);
+        incoming = edit::addClip(set, track, 1, 540.0);
+        next = edit::addClip(set, track, 0, 810.0);
+        afterGap = edit::addClip(set, track, 1, 1130.0);
+        edit::setClipPitch(set, incoming, 50); // +1%
+    }
+
+    const Clip& clip(Id id) const
+    {
+        return *std::find_if(set.clips.begin(), set.clips.end(), [id](const Clip& c) { return c.id == id; });
+    }
+    ClipTiming timing(Id id) const { return ClipTiming(clip(id), set.tracks.front()); }
+};
+} // namespace
+
+TEST_CASE("Nudging a clip carries the clips after it, and not the ones before")
+{
+    Chain c;
+    const Set original = c.set;
+    REQUIRE(edit::withFollowers(c.set, c.edited, [&](Set& s) {
+        return edit::moveClip(s, c.edited, 270.05, 0);
+    }));
+    CHECK(c.clip(c.before) == Chain{}.clip(c.before));
+    for (Id id : {c.incoming, c.next, c.afterGap})
+    {
+        const auto& was = *std::find_if(original.clips.begin(), original.clips.end(), [id](const Clip& x) { return x.id == id; });
+        CHECK(c.clip(id).startSeconds == Approx(was.startSeconds + 0.05));
+        CHECK(c.clip(id).pitchSteps == was.pitchSteps);
+    }
+}
+
+TEST_CASE("Changing a clip's tempo changes the incoming record's tempo and keeps their music together")
+{
+    Chain c;
+    const auto editedBefore = c.timing(c.edited), incomingBefore = c.timing(c.incoming);
+    const double anchor = 555.0; // middle of the overlap
+    const double editedFrame = editedBefore.sourceFrameAt(anchor), incomingFrame = incomingBefore.sourceFrameAt(anchor);
+
+    REQUIRE(edit::withFollowers(c.set, c.edited, [&](Set& s) { return edit::setClipPitch(s, c.edited, 200); }));
+
+    // +4% on the edited record: the incoming one goes from +1% to (1.01 * 1.04) = +5.04%.
+    CHECK(c.clip(c.incoming).pitchSteps == 252);
+    const auto editedNow = c.timing(c.edited), incomingNow = c.timing(c.incoming);
+    const double anchorNow = editedNow.timelineSecondsAt(editedFrame);
+    CHECK(incomingNow.timelineSecondsAt(incomingFrame) == Approx(anchorNow).margin(1e-6));
+    // Still together at the ends of the overlap: within a millisecond after rounding to a step.
+    for (double t : {incomingNow.startSeconds() + 1.0, editedNow.endSeconds() - 1.0})
+    {
+        const double drift = (editedNow.sourceFrameAt(t) - editedFrame) / editedNow.speedAt(t) -
+                             (incomingNow.sourceFrameAt(t) - incomingFrame) / incomingNow.speedAt(t);
+        CHECK(std::abs(drift / kRate) < 0.002);
+    }
+
+    // The one after the gap keeps its 20 s gap, and its tempo.
+    const auto nextNow = c.timing(c.next);
+    CHECK(c.timing(c.afterGap).startSeconds() == Approx(nextNow.endSeconds() + 20.0));
+    CHECK(c.clip(c.afterGap).pitchSteps == 0);
+}
+
+TEST_CASE("Pitch automation on a follower shifts with it")
+{
+    Chain c;
+    edit::setAutomationPoint(c.set, c.incoming, Param::Pitch, frames(100.0), 100); // +2%
+    REQUIRE(edit::withFollowers(c.set, c.edited, [&](Set& s) { return edit::setClipPitch(s, c.edited, -100); }));
+    // -2%: +1% becomes 1.01 * 0.98 = -1.02% -> -51 steps, a shift of -101.
+    CHECK(c.clip(c.incoming).pitchSteps == -51);
+    CHECK(c.clip(c.incoming).points(Param::Pitch).front().value == -1);
 }
