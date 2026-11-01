@@ -2,13 +2,15 @@
 
 Plan vinyl DJ sets on your laptop before you play them on real turntables.
 
-![Vinyl Mix Planner](docs/images/screenshot.png)
+![A two-deck mix laid out on the timeline, with volume and low-EQ automation](docs/images/Vinyl_Mix_Planner.png)
 
 Load the tracks you own on vinyl as audio files, lay them out on two to four decks, and work
 out the mix: where each record drops in, how far to move the pitch fader, and what to do with
 the EQ and volume through each transition. The app only lets you do what a Technics SL-1200MK2
 can do: ±8% pitch, with tempo and key moving together like a real record. A mix that works
 here will work on the decks.
+
+![Zoomed in on a transition: beat lines on both decks show the records in phase](docs/images/Vinyl_Mix_Planner_Close.png)
 
 ## What it does
 
