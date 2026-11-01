@@ -62,7 +62,8 @@ Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOption
     setUpCommandButton(double_, kGridDouble, "Double the BPM");
     setUpCommandButton(gridEarlier_, kGridEarlier, "Move the beat grid 2 ms earlier");
     setUpCommandButton(gridLater_, kGridLater, "Move the beat grid 2 ms later");
-    setUpCommandButton(downbeat_, kGridDownbeatHere, "Put a downbeat (bar line) at the playhead");
+    setUpCommandButton(downbeat_, kGridDownbeatHere,
+                       "Put a downbeat (bar line) at the playhead. Or shift-click the clip anywhere");
     setUpCommandButton(gridReset_, kGridReset, "Go back to the detected tempo and grid");
 
     // --- Key ---

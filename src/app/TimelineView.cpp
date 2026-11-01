@@ -648,9 +648,9 @@ void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTim
         const auto x = static_cast<float>(timeToX(timing.timelineSecondsAt(frame)));
         // Bar lines red, every 4th bar green, every 16th bar blue.
         auto every = [k](int64_t beats) { return ((k % beats) + beats) % beats == 0; };
-        const bool downbeat = every(4);
-        g.setColour(every(64)   ? juce::Colour(0xff3d8bff)
-                    : every(16) ? juce::Colour(0xff35d05a)
+        const bool downbeat = every(kBeatsPerBar);
+        g.setColour(every(kBeatsPerPhrase)       ? juce::Colour(0xff3d8bff)
+                    : every(4 * kBeatsPerBar) ? juce::Colour(0xff35d05a)
                     : downbeat  ? juce::Colours::red.withAlpha(0.9f)
                                 : juce::Colours::white.withAlpha(0.45f));
         g.drawLine(x, static_cast<float>(area.getY()), x, static_cast<float>(area.getBottom()), downbeat ? 2.0f : 1.0f);
@@ -913,12 +913,40 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
     }
 }
 
-void TimelineView::mouseUp(const juce::MouseEvent&)
+void TimelineView::mouseUp(const juce::MouseEvent& e)
 {
     if (drag_ == Drag::Move || drag_ == Drag::TrimStart || drag_ == Drag::TrimEnd || drag_ == Drag::Keypoint)
         document_.endGesture();
+    // Shift-click without dragging sets the downbeat (shift-drag is a fine move).
+    if (drag_ == Drag::Move && e.mods.isShiftDown() && !e.mouseWasDraggedSinceMouseDown())
+        setDownbeatAt(dragOrigin_.id, e.mouseDownPosition.x, !e.mods.isAltDown());
     drag_ = Drag::None;
     dragTiming_.reset();
+}
+
+void TimelineView::setDownbeatAt(Id clipId, float x, bool snapToBeatLine)
+{
+    constexpr float kSnapPixels = 5.0f;
+    const Set& set = document_.set();
+    const Clip* clip = set.findClip(clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    const auto timing = timings_.find(clipId);
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    if (!grid || timing == timings_.end())
+        return; // no tempo to build a grid from; the inspector asks for a BPM
+
+    double beat = timing->second.sourceFrameAt(xToTime(x)) / track->sampleRate;
+    if (snapToBeatLine)
+    {
+        const double period = grid->periodSeconds();
+        const double nearest = grid->firstBeatSeconds + std::round((beat - grid->firstBeatSeconds) / period) * period;
+        const double nearestX = timeToX(timing->second.timelineSecondsAt(nearest * track->sampleRate));
+        if (std::abs(nearestX - x) <= kSnapPixels)
+            beat = nearest;
+    }
+    const BeatGrid updated{grid->bpm, beat};
+    const Id trackId = track->id;
+    document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
 }
 
 void TimelineView::mouseMove(const juce::MouseEvent& e)

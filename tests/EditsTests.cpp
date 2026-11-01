@@ -288,9 +288,9 @@ TEST_CASE("Grid and key corrections are stored on the track and can be cleared")
     auto set = makeSet();
     const Id track = set.tracks.front().id;
     REQUIRE(edit::setTrackGrid(set, track, BeatGrid{124.0, 10.0}));
-    // Stored as the equivalent downbeat within the first bar.
-    const double bar = 4.0 * 60.0 / 124.0;
-    CHECK(set.tracks.front().grid->firstBeatSeconds == Approx(10.0 - std::floor(10.0 / bar) * bar));
+    // Stored as the equivalent phrase start within the first 16 bars.
+    const double phrase = 64.0 * 60.0 / 124.0;
+    CHECK(set.tracks.front().grid->firstBeatSeconds == Approx(10.0 - std::floor(10.0 / phrase) * phrase));
     CHECK_FALSE(edit::setTrackGrid(set, track, BeatGrid{0.0, 0.0}));
     REQUIRE(edit::setTrackGrid(set, track, std::nullopt));
     CHECK_FALSE(set.tracks.front().grid);

@@ -7,7 +7,11 @@ namespace vmp
 {
 
 // Constant-tempo beat grid in source time: beat k (any integer) is at
-// firstBeatSeconds + k * periodSeconds(). Every 4th beat from firstBeatSeconds is a downbeat.
+// firstBeatSeconds + k * periodSeconds(). Counting from firstBeatSeconds, every 4th beat is a
+// downbeat and every 64th starts a 16-bar phrase.
+inline constexpr int kBeatsPerBar = 4;
+inline constexpr int kBeatsPerPhrase = 64;
+
 struct BeatGrid
 {
     double bpm = 120.0;

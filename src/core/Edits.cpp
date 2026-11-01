@@ -328,9 +328,13 @@ bool setTrackGrid(Set& set, Id trackId, std::optional<BeatGrid> grid)
     if (grid && (!std::isfinite(grid->bpm) || grid->bpm < 20.0 || grid->bpm > 400.0 ||
                  !std::isfinite(grid->firstBeatSeconds)))
         return false;
-    if (grid) // keep the stored offset small: any beat of the grid will do
-        grid->firstBeatSeconds -= std::floor(grid->firstBeatSeconds / (4.0 * grid->periodSeconds())) *
-                                  4.0 * grid->periodSeconds();
+    // Keep the stored offset small, moving it by whole 16-bar phrases so bar and phrase lines
+    // stay where they were.
+    if (grid)
+    {
+        const double phrase = kBeatsPerPhrase * grid->periodSeconds();
+        grid->firstBeatSeconds -= std::floor(grid->firstBeatSeconds / phrase) * phrase;
+    }
     it->grid = grid;
     return true;
 }

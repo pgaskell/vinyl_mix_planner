@@ -25,6 +25,10 @@ namespace vmp
 // double-click to delete, right-click a line or keypoint for more. The square at the clip start
 // is the starting value. Clicking anywhere else moves the clip as usual.
 //
+// Shift-click a clip to put its downbeat there: on the beat line under the click if there is one
+// (fixing which beat is "1" without moving the grid), otherwise exactly where clicked; add Option
+// to always use the exact spot. Shift-drag moves the clip finely.
+//
 // While playing, the view follows the playhead unless you scroll or zoom away; it picks up again
 // once the playhead comes back into view, or on showPlayhead().
 class TimelineView : public juce::Component, public juce::FileDragAndDropTarget, public juce::DragAndDropTarget
@@ -155,6 +159,7 @@ private:
     std::optional<AutomationHit> automationAt(juce::Point<float> position) const;
     void automationMouseDown(const juce::MouseEvent& e, const AutomationHit& hit);
     void showAutomationMenu(Id clip, Param param, std::optional<int> keypoint);
+    void setDownbeatAt(Id clip, float x, bool snapToBeatLine);
     void navigatedByHand() { followSuspended_ = engine_.isPlaying(); }
 
     void paintRuler(juce::Graphics& g);
