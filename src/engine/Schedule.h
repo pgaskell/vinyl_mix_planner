@@ -15,11 +15,10 @@ namespace vmp
 // timing and audio. Built on the message thread after every edit and handed to the engine.
 struct ScheduledClip
 {
-    Id clipId;
+    Clip clip; // a copy: its mixer settings and automation
     double start, end;
     ClipTiming timing;
     std::shared_ptr<const TrackAudio> audio; // keeps the audio alive while the engine uses it
-    ChannelSettings mixer;
 };
 
 struct Schedule
@@ -31,7 +30,7 @@ struct Schedule
 // Returns the decoded audio for a track, or null if it isn't loaded (yet).
 using AudioLookup = std::function<std::shared_ptr<const TrackAudio>(const Track&)>;
 
-// Clips whose audio is missing or whose timing is invalid are left out; validate() reports why.
+// Clips whose audio isn't loaded are left out.
 std::unique_ptr<Schedule> buildSchedule(const Set& set, const AudioLookup& lookup);
 
 } // namespace vmp

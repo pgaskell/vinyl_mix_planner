@@ -57,7 +57,11 @@ enum Command : juce::CommandID
     kGridReset,
     kToggleKeyNotation,
     kKeyboardShortcuts,
-    kLastCommand = kKeyboardShortcuts
+    kStop,
+    kPreviousMix,
+    kNextMix,
+    kCycleAutomationView,
+    kLastCommand = kCycleAutomationView
 };
 
 } // namespace vmp

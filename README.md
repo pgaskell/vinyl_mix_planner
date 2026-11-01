@@ -8,9 +8,10 @@ hardware mixer (DJM-900NXS2 / DJM-900SRT or any multichannel Core Audio interfac
 **Status:** early but usable. Timeline with one lane per deck and 3-band waveforms: drop files
 from Finder or the library, move and trim clips, set each clip's pitch, fader and EQ, nudge by
 ear while playing, see beat lines and the key after pitch (standard or Camelot), play back
-through the laptop or a hardware mixer, save and open sets, undo. Keyboard shortcuts are
-editable (Edit > Keyboard Shortcuts). No pitch-move editing, mixer automation, effects or
-bounce yet.
+through the laptop or a hardware mixer, save and open sets, undo. Pitch, volume and EQ
+automation with keypoints; a channel strip per deck; transport with beat jumps and mix-to-mix
+navigation. Keyboard shortcuts are editable (Edit > Keyboard Shortcuts). No effects, MIDI
+recording or bounce yet.
 
 ## Building (macOS, Apple Silicon)
 

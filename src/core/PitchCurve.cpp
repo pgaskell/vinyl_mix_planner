@@ -1,11 +1,8 @@
 #include "core/PitchCurve.h"
 
-#include "core/Pitch.h"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <stdexcept>
 
 namespace vmp
 {
@@ -13,45 +10,52 @@ namespace vmp
 namespace
 {
 constexpr double kInfinity = std::numeric_limits<double>::infinity();
-// Tolerance for a move starting exactly where the previous one ends, after float round-off.
-constexpr double kAnchorEpsilon = 1.0e-9;
+
+// Speed after travelling `distance` (source seconds) into a slide from `from` to `to` that
+// covers `length` source seconds. The slide is linear in time, not in source position.
+double speedPartWay(double from, double to, double length, double distance)
+{
+    const double duration = 2.0 * length / (from + to);
+    const double acceleration = (to - from) / duration;
+    const double u = 2.0 * distance / (from + std::sqrt(from * from + 2.0 * acceleration * distance));
+    return from + acceleration * u;
+}
 } // namespace
 
-PitchCurve::PitchCurve(int baseSteps, std::vector<Move> moves)
+PitchCurve::PitchCurve(double baseSpeed, std::vector<Point> points)
 {
-    std::sort(moves.begin(), moves.end(),
-              [](const Move& a, const Move& b) { return a.sourceSeconds < b.sourceSeconds; });
+    std::stable_sort(points.begin(), points.end(),
+                     [](const Point& a, const Point& b) { return a.sourceSeconds < b.sourceSeconds; });
 
-    double t = 0.0, x = 0.0;
-    double speed = speedFromPitchSteps(baseSteps);
-
-    for (const auto& move : moves)
+    // Speed at the needle drop, and the points still ahead of it.
+    double speed = baseSpeed;
+    auto ahead = std::find_if(points.begin(), points.end(), [](const Point& p) { return p.sourceSeconds >= 0.0; });
+    if (!points.empty())
     {
-        if (!(move.durationSeconds >= 0.0) || !std::isfinite(move.durationSeconds))
-            throw std::invalid_argument("pitch move has an invalid duration");
-        if (move.sourceSeconds < 0.0)
-            continue; // anchored before the needle drop: trimmed away
-        if (move.sourceSeconds < x - kAnchorEpsilon)
-            throw std::invalid_argument("pitch move starts before the previous one has finished");
-
-        const double hold = (move.sourceSeconds - x) / speed;
-        if (hold > 0.0)
+        if (ahead == points.begin())
+            speed = ahead->speed;
+        else if (ahead == points.end())
+            speed = points.back().speed;
+        else // the needle drop is part way through a slide
         {
-            segments_.push_back({t, hold, speed, speed, x, 0.0});
-            t += hold;
-            x = move.sourceSeconds;
+            const auto& before = *std::prev(ahead);
+            speed = speedPartWay(before.speed, ahead->speed, ahead->sourceSeconds - before.sourceSeconds,
+                                 -before.sourceSeconds);
         }
-
-        const double target = speedFromPitchSteps(move.targetSteps);
-        if (move.durationSeconds > 0.0)
-        {
-            segments_.push_back({t, move.durationSeconds, speed, target, x, (target - speed) / move.durationSeconds});
-            x += move.durationSeconds * (speed + target) / 2.0;
-            t += move.durationSeconds;
-        }
-        speed = target;
     }
 
+    double t = 0.0, x = 0.0;
+    for (auto it = ahead; it != points.end(); ++it)
+    {
+        if (it->sourceSeconds > x)
+        {
+            const double duration = 2.0 * (it->sourceSeconds - x) / (speed + it->speed);
+            segments_.push_back({t, duration, speed, it->speed, x, (it->speed - speed) / duration});
+            t += duration;
+            x = it->sourceSeconds;
+        }
+        speed = it->speed; // a point at the same position as the last is a jump
+    }
     segments_.push_back({t, kInfinity, speed, speed, x, 0.0});
 }
 

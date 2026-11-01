@@ -17,6 +17,26 @@ constexpr double kMinTransitionSpan = 4.0;
 constexpr double kFineDragFactor = 0.1;
 constexpr double kMinBeatSpacingPixels = 8.0; // closer than this, beat lines are just noise
 constexpr int kBeatsInBeatZoom = 8;
+constexpr float kKeypointGrab = 6.0f;
+constexpr int kViewNone = 1; // automation menu ids: 1 = none, then 2 + Param
+
+juce::Colour paramColour(Param param)
+{
+    switch (param)
+    {
+    case Param::Pitch:
+        return juce::Colour(0xffffe14d);
+    case Param::Volume:
+        return juce::Colour(0xff7ee08a);
+    case Param::High:
+        return juce::Colour(0xfff4f4f4);
+    case Param::Mid:
+        return juce::Colour(0xffffa31a);
+    case Param::Low:
+        return juce::Colour(0xff4f8cff);
+    }
+    return juce::Colours::white;
+}
 
 // CDJ-3000 style 3-band colours.
 const juce::Colour kLowColour{0xff2a6cf0};
@@ -39,6 +59,64 @@ TimelineView::TimelineView(SetDocument& document, AudioPool& pool, Engine& engin
     : document_(document), pool_(pool), engine_(engine), display_(display)
 {
     setWantsKeyboardFocus(true);
+    for (int d = 0; d < kMaxDecks; ++d)
+    {
+        auto& box = viewBoxes_[static_cast<size_t>(d)];
+        box.addItem("Waveform", kViewNone);
+        for (int p = 0; p < kNumParams; ++p)
+            box.addItem(paramName(static_cast<Param>(p)), 2 + p);
+        box.setSelectedId(kViewNone, juce::dontSendNotification);
+        box.setWantsKeyboardFocus(false);
+        box.setTooltip("Which automation to show and edit on this deck");
+        box.onChange = [this, d] {
+            const int id = viewBoxes_[static_cast<size_t>(d)].getSelectedId();
+            setAutomationView(d, id > kViewNone ? std::optional(static_cast<Param>(id - 2)) : std::nullopt);
+        };
+        addChildComponent(box);
+    }
+}
+
+void TimelineView::setAutomationView(int deck, std::optional<Param> param)
+{
+    automationView_[static_cast<size_t>(deck)] = param;
+    viewBoxes_[static_cast<size_t>(deck)].setSelectedId(param ? 2 + static_cast<int>(*param) : kViewNone,
+                                                        juce::dontSendNotification);
+    repaint();
+}
+
+void TimelineView::cycleAutomationView(int deck)
+{
+    const auto current = automationView(deck);
+    if (!current)
+        setAutomationView(deck, Param::Pitch);
+    else if (static_cast<int>(*current) + 1 < kNumParams)
+        setAutomationView(deck, static_cast<Param>(static_cast<int>(*current) + 1));
+    else
+        setAutomationView(deck, std::nullopt);
+}
+
+std::vector<std::pair<double, double>> TimelineView::mixes() const
+{
+    auto spans = transitions_;
+    std::sort(spans.begin(), spans.end());
+    std::vector<std::pair<double, double>> merged;
+    for (const auto& span : spans)
+        if (!merged.empty() && span.first <= merged.back().second)
+            merged.back().second = std::max(merged.back().second, span.second);
+        else
+            merged.push_back(span);
+    return merged;
+}
+
+void TimelineView::resized()
+{
+    for (int d = 0; d < kMaxDecks; ++d)
+    {
+        auto& box = viewBoxes_[static_cast<size_t>(d)];
+        box.setVisible(d < numDecks());
+        if (d < numDecks())
+            box.setBounds(laneBounds(d).withWidth(kHeaderWidth).reduced(8, 0).withTrimmedTop(26).withHeight(22));
+    }
 }
 
 // --- State ------------------------------------------------------------------
@@ -81,6 +159,7 @@ void TimelineView::refresh()
 
     if (selected_ != 0 && set.findClip(selected_) == nullptr)
         setSelectedClip(0);
+    resized(); // the number of decks may have changed
     repaint();
 }
 
@@ -120,6 +199,22 @@ juce::Rectangle<int> TimelineView::laneBounds(int deck) const
     return {0, top + deck * height, getWidth(), height};
 }
 
+juce::Rectangle<int> TimelineView::waveformBounds(int deck) const
+{
+    auto lane = laneBounds(deck).reduced(0, 4);
+    if (automationView(deck))
+        lane.removeFromBottom(stripBounds(deck).getHeight() + 2);
+    return lane;
+}
+
+juce::Rectangle<int> TimelineView::stripBounds(int deck) const
+{
+    if (!automationView(deck))
+        return {};
+    const auto lane = laneBounds(deck).reduced(0, 4);
+    return lane.withTop(lane.getBottom() - std::max(40, lane.getHeight() * 2 / 5));
+}
+
 int TimelineView::deckAt(int y) const
 {
     for (int d = 0; d < numDecks(); ++d)
@@ -131,7 +226,7 @@ int TimelineView::deckAt(int y) const
 TimelineView::Hit TimelineView::clipAt(juce::Point<float> p) const
 {
     const int deck = deckAt(static_cast<int>(p.y));
-    if (deck < 0 || p.x < kHeaderWidth)
+    if (deck < 0 || p.x < kHeaderWidth || stripBounds(deck).contains(p.toInt()))
         return {};
 
     // Later clips are drawn on top, so search them first.
@@ -333,7 +428,7 @@ void TimelineView::paint(juce::Graphics& g)
         g.fillRect(lane.getX(), lane.getY() + 1, 4, lane.getHeight() - 2);
         g.setColour(juce::Colours::white);
         g.setFont(juce::FontOptions(14.0f, juce::Font::bold));
-        g.drawText("Deck " + juce::String(d + 1), lane.withWidth(kHeaderWidth).withTrimmedLeft(10),
+        g.drawText("Deck " + juce::String(d + 1), lane.withWidth(kHeaderWidth).withTrimmedLeft(10).withHeight(26),
                    juce::Justification::centredLeft);
     }
 
@@ -403,7 +498,7 @@ void TimelineView::paintRuler(juce::Graphics& g)
 
 void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTiming& timing)
 {
-    const auto lane = laneBounds(clip.deck).reduced(0, 4);
+    const auto lane = waveformBounds(clip.deck);
     const double x0 = timeToX(timing.startSeconds()), x1 = timeToX(timing.endSeconds());
     if (x1 < kHeaderWidth || x0 > getWidth())
         return;
@@ -435,12 +530,10 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
     if (grid)
         paintBeats(g, clip, timing, *track, *grid, waveArea);
 
-    // Pitch moves, where they start.
-    g.setColour(juce::Colours::white.withAlpha(0.6f));
-    for (const auto& move : clip.pitchMoves)
+    if (const auto param = automationView(clip.deck))
     {
-        const auto mx = static_cast<float>(timeToX(timing.timelineSecondsAt(static_cast<double>(move.sourceFrame))));
-        g.drawLine(mx, static_cast<float>(area.getY()), mx, static_cast<float>(area.getBottom()), 1.0f);
+        const auto strip = stripBounds(clip.deck);
+        paintAutomation(g, clip, timing, *param, area.withY(strip.getY()).withHeight(strip.getHeight()));
     }
 
     juce::Colour border = colour.brighter(0.2f);
@@ -459,9 +552,9 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
     g.drawRect(area.toFloat(), thickness);
 
     const juce::String title = track != nullptr ? juce::String(juce::CharPointer_UTF8(track->title.c_str())) : "?";
-    // Tempo and key as heard, i.e. after the pitch fader.
-    const double speed = speedFromPitchSteps(clip.pitchSteps);
-    juce::String text = title + "   " + juce::String::formatted("%+.2f%%", pitchPercentFromSteps(clip.pitchSteps) + 0.0);
+    // Pitch, tempo and key as heard when the record comes in.
+    const double speed = timing.speedAt(timing.startSeconds());
+    juce::String text = title + "   " + juce::String::formatted("%+.2f%%", (speed - 1.0) * 100.0 + 0.0);
     if (grid)
         text << "   " << juce::String(grid->bpm * speed, 2) << " BPM";
     if (const auto key = track != nullptr ? pool_.keyFor(*track) : std::nullopt)
@@ -532,6 +625,161 @@ void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTim
     }
 }
 
+double TimelineView::valueToY(Param param, double value, juce::Rectangle<int> strip) const
+{
+    const auto range = paramRange(param);
+    const double fraction = (value - range.min) / (range.max - range.min);
+    return strip.getBottom() - 3.0 - fraction * (strip.getHeight() - 6.0);
+}
+
+double TimelineView::yToValue(Param param, double y, juce::Rectangle<int> strip) const
+{
+    const auto range = paramRange(param);
+    const double fraction = std::clamp((strip.getBottom() - 3.0 - y) / (strip.getHeight() - 6.0), 0.0, 1.0);
+    return range.min + fraction * (range.max - range.min);
+}
+
+void TimelineView::paintAutomation(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
+                                   juce::Rectangle<int> area)
+{
+    g.setColour(juce::Colour(0xff17191d));
+    g.fillRect(area);
+    g.setColour(deckColour(clip.deck).withAlpha(0.5f));
+    g.drawRect(area);
+
+    // Centre line: 0% pitch, EQ centre detent.
+    if (param != Param::Volume)
+    {
+        g.setColour(juce::Colours::white.withAlpha(0.15f));
+        const auto mid = static_cast<float>(valueToY(param, param == Param::Pitch ? 0.0 : 0.5, area));
+        g.drawHorizontalLine(static_cast<int>(mid), static_cast<float>(area.getX()), static_cast<float>(area.getRight()));
+    }
+
+    const auto& points = clip.points(param);
+    const auto colour = paramColour(param);
+    const int from = std::max(area.getX(), kHeaderWidth), to = std::min(area.getRight(), getWidth());
+    const double start = timing.startSeconds(), end = timing.endSeconds();
+
+    // The value along the clip. Pitch is drawn from the actual speed (slides are linear in time).
+    juce::Path line;
+    for (int x = from; x <= to; x += 2)
+    {
+        const double t = std::clamp(xToTime(x), start, end);
+        const double value = param == Param::Pitch ? (timing.speedAt(t) - 1.0) * 100.0 / kPitchStepPercent
+                                                   : valueAt(clip, param, timing.sourceFrameAt(t));
+        const auto y = static_cast<float>(valueToY(param, value, area));
+        if (line.isEmpty())
+            line.startNewSubPath(static_cast<float>(x), y);
+        else
+            line.lineTo(static_cast<float>(x), y);
+    }
+    g.setColour(colour.withAlpha(points.empty() ? 0.35f : 0.9f));
+    g.strokePath(line, juce::PathStrokeType(points.empty() ? 1.0f : 1.5f));
+
+    if (points.empty())
+    {
+        if (area.getWidth() > 160)
+        {
+            g.setColour(juce::Colours::grey);
+            g.setFont(juce::FontOptions(11.0f));
+            g.drawText(juce::String(paramName(param)) + ": click to add keypoints",
+                       area.withTrimmedLeft(std::max(0, kHeaderWidth - area.getX()) + 6), juce::Justification::topLeft);
+        }
+        return;
+    }
+
+    g.setColour(colour);
+    for (const auto& point : points)
+    {
+        const auto x = static_cast<float>(timeToX(timing.timelineSecondsAt(static_cast<double>(point.sourceFrame))));
+        if (x < static_cast<float>(from - 5) || x > static_cast<float>(to + 5))
+            continue;
+        const auto y = static_cast<float>(valueToY(param, point.value, area));
+        g.fillEllipse(x - 3.5f, y - 3.5f, 7.0f, 7.0f);
+    }
+}
+
+Id TimelineView::clipInStripAt(int deck, double x) const
+{
+    const double t = xToTime(x);
+    for (const auto& clip : document_.set().clips)
+        if (auto it = timings_.find(clip.id);
+            clip.deck == deck && it != timings_.end() && t >= it->second.startSeconds() && t <= it->second.endSeconds())
+            return clip.id;
+    return 0;
+}
+
+std::optional<size_t> TimelineView::keypointAt(const Clip& clip, Param param, juce::Point<float> position) const
+{
+    const auto it = timings_.find(clip.id);
+    if (it == timings_.end())
+        return std::nullopt;
+    const auto strip = stripBounds(clip.deck);
+    const auto& points = clip.points(param);
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+        const juce::Point<float> p(static_cast<float>(timeToX(it->second.timelineSecondsAt(static_cast<double>(points[i].sourceFrame)))),
+                                   static_cast<float>(valueToY(param, points[i].value, strip)));
+        if (p.getDistanceFrom(position) <= kKeypointGrab)
+            return i;
+    }
+    return std::nullopt;
+}
+
+void TimelineView::stripMouseDown(const juce::MouseEvent& e, int deck)
+{
+    const Param param = *automationView(deck);
+    const Id id = clipInStripAt(deck, e.position.x);
+    if (id == 0)
+        return;
+    setSelectedClip(id);
+    const Clip& clip = *document_.set().findClip(id);
+    const auto keypoint = keypointAt(clip, param, e.position);
+
+    if (e.mods.isPopupMenu())
+    {
+        showStripMenu(id, param, keypoint);
+        return;
+    }
+
+    dragTiming_.emplace(timings_.at(id));
+    dragOrigin_ = clip;
+    dragParam_ = param;
+    document_.beginGesture();
+    if (keypoint)
+        dragKeypoint_ = *keypoint;
+    else
+    {
+        // A new keypoint where clicked, then drag it.
+        const auto frame = static_cast<int64_t>(std::llround(std::clamp(
+            dragTiming_->sourceFrameAt(xToTime(e.x)), static_cast<double>(clip.inFrame), static_cast<double>(clip.outFrame))));
+        const double value = yToValue(param, e.position.y, stripBounds(deck));
+        document_.edit([&](Set& s) { return edit::setAutomationPoint(s, id, param, frame, value); });
+        const auto& points = document_.set().findClip(id)->points(param);
+        dragKeypoint_ = static_cast<size_t>(
+            std::find_if(points.begin(), points.end(), [&](const auto& p) { return p.sourceFrame == frame; }) -
+            points.begin());
+    }
+    drag_ = Drag::Keypoint;
+}
+
+void TimelineView::showStripMenu(Id clip, Param param, std::optional<size_t> keypoint)
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, "Delete keypoint", keypoint.has_value());
+    menu.addItem(2, juce::String("Clear ") + paramName(param) + " automation",
+                 !document_.set().findClip(clip)->points(param).empty());
+    menu.showMenuAsync(juce::PopupMenu::Options(), [safe = juce::Component::SafePointer(this), clip, param,
+                                                    keypoint](int result) {
+        if (safe == nullptr)
+            return;
+        if (result == 1 && keypoint)
+            safe->document_.edit([&](Set& s) { return edit::deleteAutomationPoint(s, clip, param, *keypoint); });
+        else if (result == 2)
+            safe->document_.edit([&](Set& s) { return edit::clearAutomation(s, clip, param); });
+    });
+}
+
 // --- Mouse ------------------------------------------------------------------
 
 void TimelineView::mouseDown(const juce::MouseEvent& e)
@@ -542,6 +790,12 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
     {
         drag_ = Drag::Scrub;
         engine_.seek(std::max(0.0, xToTime(e.x)));
+        return;
+    }
+
+    if (const int deck = deckAt(e.y); deck >= 0 && stripBounds(deck).contains(e.getPosition()))
+    {
+        stripMouseDown(e, deck);
         return;
     }
 
@@ -585,6 +839,18 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
     case Drag::TrimEnd:
         document_.edit([&](Set& s) { return edit::trimClipEnd(s, id, t); });
         break;
+    case Drag::Keypoint:
+    {
+        // Positions come from the clip's timing at the start of the drag: dragging a pitch
+        // keypoint changes the timing, and following it would make the point run away.
+        const auto frame = static_cast<int64_t>(std::llround(std::clamp(
+            dragTiming_->sourceFrameAt(t), static_cast<double>(dragOrigin_.inFrame), static_cast<double>(dragOrigin_.outFrame))));
+        const double value = yToValue(dragParam_, e.position.y, stripBounds(dragOrigin_.deck));
+        const auto param = dragParam_;
+        const auto index = dragKeypoint_;
+        document_.edit([&](Set& s) { return edit::moveAutomationPoint(s, id, param, index, frame, value); });
+        break;
+    }
     case Drag::None:
         break;
     }
@@ -592,13 +858,21 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
 
 void TimelineView::mouseUp(const juce::MouseEvent&)
 {
-    if (drag_ == Drag::Move || drag_ == Drag::TrimStart || drag_ == Drag::TrimEnd)
+    if (drag_ == Drag::Move || drag_ == Drag::TrimStart || drag_ == Drag::TrimEnd || drag_ == Drag::Keypoint)
         document_.endGesture();
     drag_ = Drag::None;
+    dragTiming_.reset();
 }
 
 void TimelineView::mouseMove(const juce::MouseEvent& e)
 {
+    if (const int deck = deckAt(e.y); deck >= 0 && stripBounds(deck).contains(e.getPosition()))
+    {
+        const Clip* clip = document_.set().findClip(clipInStripAt(deck, e.position.x));
+        const bool onPoint = clip != nullptr && keypointAt(*clip, *automationView(deck), e.position);
+        setMouseCursor(onPoint ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::CrosshairCursor);
+        return;
+    }
     const Hit hit = clipAt(e.position);
     setMouseCursor(hit.part == Part::StartEdge || hit.part == Part::EndEdge ? juce::MouseCursor::LeftRightResizeCursor
                                                                             : juce::MouseCursor::NormalCursor);
@@ -606,6 +880,15 @@ void TimelineView::mouseMove(const juce::MouseEvent& e)
 
 void TimelineView::mouseDoubleClick(const juce::MouseEvent& e)
 {
+    if (const int deck = deckAt(e.y); deck >= 0 && stripBounds(deck).contains(e.getPosition()))
+    {
+        const Id id = clipInStripAt(deck, e.position.x);
+        const Clip* clip = document_.set().findClip(id);
+        const Param param = *automationView(deck);
+        if (const auto keypoint = clip != nullptr ? keypointAt(*clip, param, e.position) : std::nullopt)
+            document_.edit([&](Set& s) { return edit::deleteAutomationPoint(s, id, param, *keypoint); });
+        return;
+    }
     if (clipAt(e.position).clip != 0)
         zoomToClip();
 }

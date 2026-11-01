@@ -1,7 +1,6 @@
 #include "engine/Schedule.h"
 
 #include <algorithm>
-#include <stdexcept>
 
 namespace vmp
 {
@@ -19,16 +18,9 @@ std::unique_ptr<Schedule> buildSchedule(const Set& set, const AudioLookup& looku
         auto audio = lookup(*track);
         if (audio == nullptr)
             continue;
-        try
-        {
-            ClipTiming timing(clip, *track);
-            const double start = timing.startSeconds(), end = timing.endSeconds();
-            schedule->lanes[static_cast<size_t>(clip.deck)].push_back(
-                {clip.id, start, end, std::move(timing), std::move(audio), clip.mixer});
-        }
-        catch (const std::invalid_argument&)
-        {
-        }
+        ClipTiming timing(clip, *track);
+        const double start = timing.startSeconds(), end = timing.endSeconds();
+        schedule->lanes[static_cast<size_t>(clip.deck)].push_back({clip, start, end, std::move(timing), std::move(audio)});
     }
 
     for (auto& lane : schedule->lanes)

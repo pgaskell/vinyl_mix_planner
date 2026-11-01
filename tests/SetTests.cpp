@@ -61,7 +61,8 @@ TEST_CASE("Clip timing maps between timeline and source frames")
 {
     auto set = makeSet();
     auto& clip = addClip(set, 1, 0, 100.0, 10.0, 200.0);
-    clip.pitchMoves.push_back({frames(40.0), 6.0, 120});
+    // Hold 0% to 40 s of music, then slide to +6% by 46.18 s (6 s at an average of +3%).
+    clip.points(Param::Pitch) = {{frames(40.0), 0.0}, {frames(40.0 + 6.0 * 1.03), 120.0}};
     const ClipTiming timing(clip, *set.findTrack(1));
 
     CHECK(timing.sourceFrameAt(100.0) == Approx(static_cast<double>(frames(10.0))));
@@ -71,11 +72,11 @@ TEST_CASE("Clip timing maps between timeline and source frames")
         CHECK(timing.timelineSecondsAt(timing.sourceFrameAt(t)) == Approx(t));
 }
 
-TEST_CASE("Trimming the in-point keeps pitch moves on the same part of the music")
+TEST_CASE("Trimming the in-point keeps pitch automation on the same part of the music")
 {
     auto set = makeSet();
     auto& full = addClip(set, 1, 0, 0.0, 0.0, 300.0);
-    full.pitchMoves.push_back({frames(120.0), 8.0, 100});
+    full.points(Param::Pitch) = {{frames(120.0), 0.0}, {frames(128.0), 100.0}};
     auto trimmed = full;
     trimmed.inFrame = frames(60.0);
     trimmed.startSeconds = 500.0;
@@ -166,17 +167,25 @@ TEST_CASE("Structural problems are errors")
     {
         addClip(set, 1, 0, 0.0, 0.0, 100.0, 161);
     }
-    SECTION("pitch move target beyond +/-8%")
+    SECTION("pitch keypoint beyond +/-8%")
     {
-        addClip(set, 1, 0, 0.0, 0.0, 100.0).pitchMoves.push_back({frames(10.0), 1.0, -200});
-    }
-    SECTION("overlapping pitch moves")
-    {
-        auto& clip = addClip(set, 1, 0, 0.0, 0.0, 100.0);
-        clip.pitchMoves.push_back({frames(10.0), 10.0, 100});
-        clip.pitchMoves.push_back({frames(12.0), 1.0, 0});
+        addClip(set, 1, 0, 0.0, 0.0, 100.0).points(Param::Pitch).push_back({frames(10.0), -200.0});
     }
     const auto issues = validate(set);
     REQUIRE(issues.size() == 1);
     CHECK(issues[0].severity == Issue::Severity::Error);
+}
+
+TEST_CASE("Automation values slide linearly between keypoints")
+{
+    Clip clip;
+    clip.mixer.fader = 0.8;
+    CHECK(valueAt(clip, Param::Volume, 1000.0) == 0.8); // no keypoints: the starting value
+
+    clip.points(Param::Volume) = {{1000, 1.0}, {3000, 0.0}, {3000, 0.5}};
+    CHECK(valueAt(clip, Param::Volume, 0.0) == 1.0);     // held before the first
+    CHECK(valueAt(clip, Param::Volume, 2000.0) == Approx(0.5));
+    CHECK(valueAt(clip, Param::Volume, 3500.0) == 0.5);  // the jump at 3000 lands on the later point
+    CHECK(mixerAt(clip, 2000.0).fader == Approx(0.5));
+    CHECK(mixerAt(clip, 2000.0).high == 0.5);            // untouched controls keep their starting values
 }

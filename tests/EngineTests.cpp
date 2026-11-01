@@ -219,3 +219,19 @@ TEST_CASE("Blocks larger than announced are rendered in chunks")
     CHECK(left[1500] == Approx(0.25f).margin(1e-3));
     CHECK(left.back() == Approx(0.25f).margin(1e-3));
 }
+
+TEST_CASE("Volume automation fades a deck in the internal mix")
+{
+    Fixture f;
+    const Id id = f.addClip(makeConstant(0.25f, kRate, 10.0), 0, 0.0);
+    // Full volume until 1 s into the record, fader closed by 2 s.
+    edit::setAutomationPoint(f.set, id, Param::Volume, static_cast<int64_t>(kRate), 1.0);
+    edit::setAutomationPoint(f.set, id, Param::Volume, static_cast<int64_t>(2 * kRate), 0.0);
+    f.publish();
+    f.engine.play();
+
+    const auto out = f.run(2.5);
+    CHECK(out[0][static_cast<size_t>(0.9 * kRate)] == Approx(0.25f).margin(0.002f));
+    CHECK(out[0][static_cast<size_t>(1.5 * kRate)] == Approx(0.25f * MixerChannel::faderGain(0.5)).margin(0.01f));
+    CHECK(std::abs(out[0][static_cast<size_t>(2.2 * kRate)]) < 0.001f);
+}

@@ -104,10 +104,7 @@ bool trimClipStart(Set& set, Id clipId, double newStartSeconds)
         return false;
 
     const double earliest = timing->timelineSecondsAt(0.0);
-    double latest = timing->endSeconds() - kMinClipSeconds;
-    for (const auto& move : clip->pitchMoves)
-        if (move.sourceFrame >= clip->inFrame)
-            latest = std::min(latest, timing->timelineSecondsAt(static_cast<double>(move.sourceFrame)));
+    const double latest = timing->endSeconds() - kMinClipSeconds;
     if (latest < earliest)
         return false;
 
@@ -136,29 +133,153 @@ bool trimClipEnd(Set& set, Id clipId, double newEndSeconds)
     return true;
 }
 
+namespace
+{
+// After an edit that changes the clip's speed, slides the clip so the music that was at
+// `pivotSeconds` is there again, as when you move the pitch fader on a playing deck. Does nothing
+// if the pivot is outside the clip.
+void keepMusicAt(Clip& clip, const Track& track, const ClipTiming& before, std::optional<double> pivotSeconds)
+{
+    if (!pivotSeconds || *pivotSeconds <= before.startSeconds() || *pivotSeconds >= before.endSeconds())
+        return;
+    const double frame = before.sourceFrameAt(*pivotSeconds);
+    clip.startSeconds += *pivotSeconds - ClipTiming(clip, track).timelineSecondsAt(frame);
+}
+
+double clampValue(Param param, double value)
+{
+    const auto range = paramRange(param);
+    if (param == Param::Pitch)
+        value = std::round(value); // whole 0.05% steps
+    return std::clamp(value, range.min, range.max);
+}
+
+// The starting value for a mixer control. Not for pitch.
+double& mixerValue(ChannelSettings& m, Param param)
+{
+    switch (param)
+    {
+    case Param::High:
+        return m.high;
+    case Param::Mid:
+        return m.mid;
+    case Param::Low:
+        return m.low;
+    case Param::Volume:
+    case Param::Pitch:
+        break;
+    }
+    return m.fader;
+}
+
+void sortPoints(std::vector<AutomationPoint>& points)
+{
+    std::stable_sort(points.begin(), points.end(),
+                     [](const AutomationPoint& a, const AutomationPoint& b) { return a.sourceFrame < b.sourceFrame; });
+}
+} // namespace
+
 bool setClipPitch(Set& set, Id clipId, int pitchSteps, std::optional<double> pivotSeconds)
 {
     Clip* clip = findClip(set, clipId);
     const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
     if (track == nullptr)
         return false;
-    const auto before = timingFor(*clip, *track);
-    if (!before)
+    const ClipTiming before(*clip, *track);
+    clip->pitchSteps = clampPitchSteps(pitchSteps);
+    keepMusicAt(*clip, *track, before, pivotSeconds);
+    return true;
+}
+
+bool setAutomationPoint(Set& set, Id clipId, Param param, int64_t sourceFrame, double value)
+{
+    Clip* clip = findClip(set, clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr || sourceFrame < 0 || sourceFrame > track->frames || !std::isfinite(value))
+        return false;
+    auto& points = clip->points(param);
+    const AutomationPoint point{sourceFrame, clampValue(param, value)};
+    auto same = std::find_if(points.begin(), points.end(), [&](const auto& p) { return p.sourceFrame == sourceFrame; });
+    if (same != points.end())
+        *same = point;
+    else
+        points.push_back(point);
+    sortPoints(points);
+    return true;
+}
+
+bool moveAutomationPoint(Set& set, Id clipId, Param param, size_t index, int64_t sourceFrame, double value)
+{
+    Clip* clip = findClip(set, clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr || index >= clip->points(param).size() || !std::isfinite(value))
+        return false;
+    auto& points = clip->points(param);
+    // Stays between its neighbours so the order (and the caller's index) holds.
+    const int64_t low = index > 0 ? points[index - 1].sourceFrame : 0;
+    const int64_t high = index + 1 < points.size() ? points[index + 1].sourceFrame : track->frames;
+    points[index] = {std::clamp(sourceFrame, low, high), clampValue(param, value)};
+    return true;
+}
+
+bool deleteAutomationPoint(Set& set, Id clipId, Param param, size_t index)
+{
+    Clip* clip = findClip(set, clipId);
+    if (clip == nullptr || index >= clip->points(param).size())
+        return false;
+    auto& points = clip->points(param);
+    points.erase(points.begin() + static_cast<long>(index));
+    return true;
+}
+
+bool clearAutomation(Set& set, Id clipId, Param param)
+{
+    Clip* clip = findClip(set, clipId);
+    if (clip == nullptr || clip->points(param).empty())
+        return false;
+    // Keep the sound at the start of the clip: its first value becomes the starting value.
+    const double first = valueAt(*clip, param, static_cast<double>(clip->inFrame));
+    clip->points(param).clear();
+    if (param == Param::Pitch)
+        clip->pitchSteps = clampPitchSteps(static_cast<int>(std::lround(first)));
+    else
+        mixerValue(clip->mixer, param) = clampValue(param, first);
+    return true;
+}
+
+bool setParamAt(Set& set, Id clipId, Param param, double value, double playheadSeconds)
+{
+    Clip* clip = findClip(set, clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr || !std::isfinite(value))
         return false;
 
-    Clip changed = *clip;
-    changed.pitchSteps = clampPitchSteps(pitchSteps);
-    // A slower start can make an existing ramp run into the next move.
-    const auto after = timingFor(changed, *track);
-    if (!after)
-        return false;
-
-    if (pivotSeconds && *pivotSeconds > before->startSeconds() && *pivotSeconds < before->endSeconds())
+    if (clip->points(param).empty())
     {
-        const double frame = before->sourceFrameAt(*pivotSeconds);
-        changed.startSeconds += *pivotSeconds - after->timelineSecondsAt(frame);
+        if (param == Param::Pitch)
+            return setClipPitch(set, clipId, static_cast<int>(std::lround(value)), playheadSeconds);
+        mixerValue(clip->mixer, param) = clampValue(param, value);
+        return true;
     }
-    *clip = changed;
+
+    // Automated: write a keypoint at the music under the playhead, replacing one close by.
+    const ClipTiming before(*clip, *track);
+    if (playheadSeconds < before.startSeconds() || playheadSeconds > before.endSeconds())
+        return false;
+    const auto frame = static_cast<int64_t>(std::llround(before.sourceFrameAt(playheadSeconds)));
+    const auto nearby = static_cast<int64_t>(kKeypointSnapSeconds * track->sampleRate);
+    auto& points = clip->points(param);
+    auto close = std::find_if(points.begin(), points.end(),
+                              [&](const auto& p) { return std::llabs(p.sourceFrame - frame) <= nearby; });
+    if (close != points.end())
+        close->value = clampValue(param, value);
+    else
+    {
+        points.push_back({frame, clampValue(param, value)});
+        sortPoints(points);
+    }
+    if (param == Param::Pitch)
+        keepMusicAt(*clip, *track, before, playheadSeconds);
     return true;
 }
 

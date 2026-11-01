@@ -23,7 +23,6 @@ constexpr double kFineNudgeSeconds = 0.001;
 constexpr int kCoarsePitchSteps = 10; // 0.5%
 constexpr double kGridShiftSeconds = 0.002;
 constexpr double kGridBpmStep = 0.01;
-constexpr double kJumpSeconds = 4.0;
 constexpr int kMidiLogLines = 300;
 const juce::Colour kBackground{0xff1b1d21};
 } // namespace
@@ -33,7 +32,8 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
       analysisCache_(settings.getFile().getSiblingFile("analysis.json")),
       pool_(analysisCache_),
       timeline_(document_, pool_, engine_, display_),
-      inspector_(document_, pool_, display_, commands_, [this] { return engine_.playheadSeconds(); }),
+      inspector_(document_, pool_, display_, commands_),
+      mixer_(document_, pool_, display_, [this] { return engine_.playheadSeconds(); }),
       library_(pool_, settings)
 {
     display_.keyNotation = static_cast<KeyNotation>(std::clamp(settings_.getIntValue("keyNotation", 2), 0, 2));
@@ -62,6 +62,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     };
 
     addAndMakeVisible(inspector_);
+    addAndMakeVisible(mixer_);
     addAndMakeVisible(library_);
     library_.onFileDoubleClicked = [this](const juce::File& file) {
         addFileAtPlayhead(file);
@@ -87,7 +88,21 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
         button.onClick = [this, command] { commands_.invokeDirectly(command, true); };
         addAndMakeVisible(button);
     };
+    commandButton(previousMixButton_, kPreviousMix, "Back to the previous mix (where two decks overlap)");
+    commandButton(rewindButton_, kJumpBack, "Back by the number of beats chosen on the right");
     commandButton(playButton_, kPlayPause, "Play / pause (space)");
+    commandButton(stopButton_, kStop, "Stop and return to where playback started (shift space)");
+    commandButton(forwardButton_, kJumpForward, "Forward by the number of beats chosen on the right");
+    commandButton(nextMixButton_, kNextMix, "On to the next mix (where two decks overlap)");
+    for (int beats : {4, 8, 16, 32})
+        beatJumpBox_.addItem(juce::String(beats) + " beats", beats);
+    beatJumpBox_.setSelectedId(settings_.getIntValue("beatJump", 16), juce::dontSendNotification);
+    if (beatJumpBox_.getSelectedId() == 0)
+        beatJumpBox_.setSelectedId(16, juce::dontSendNotification);
+    beatJumpBox_.setWantsKeyboardFocus(false);
+    beatJumpBox_.setTooltip("How far << and >> jump");
+    beatJumpBox_.onChange = [this] { settings_.setValue("beatJump", beatJumpBox_.getSelectedId()); };
+    addAndMakeVisible(beatJumpBox_);
     commandButton(zoomOutButton_, kZoomOut, "Zoom out (cmd -)");
     commandButton(zoomInButton_, kZoomIn, "Zoom in (cmd =)");
     commandButton(zoomSetButton_, kZoomSet, "Zoom to the whole mix (shift Z)");
@@ -234,6 +249,7 @@ void MainComponent::timerCallback()
         documentChanged();
 
     timeline_.updatePlayhead();
+    mixer_.update(timeline_.selectedClip(), engine_.playheadSeconds());
     timeLabel_.setText(formatTime(engine_.playheadSeconds(), true), juce::dontSendNotification);
     playButton_.setButtonText(engine_.isPlaying() ? "Pause" : "Play");
     engine_.collectGarbage();
@@ -263,7 +279,11 @@ void MainComponent::documentChanged()
     timeline_.refresh();
     inspector_.refresh();
     issues_.setIssues(validate(set));
-    decksBox_.setSelectedId(set.numDecks, juce::dontSendNotification);
+    if (decksBox_.getSelectedId() != set.numDecks)
+    {
+        decksBox_.setSelectedId(set.numDecks, juce::dontSendNotification);
+        resized(); // the mixer panel's width depends on the deck count
+    }
     rebuildSchedule();
     updateTitle();
     commands_.commandStatusChanged();
@@ -432,6 +452,61 @@ BeatGrid retempo(const BeatGrid& grid, double bpm, std::optional<double> pivot)
     return {bpm, beat - k * 60.0 / bpm};
 }
 } // namespace
+
+double MainComponent::beatSecondsAtPlayhead() const
+{
+    const double playhead = engine_.playheadSeconds();
+    const Set& set = document_.set();
+    std::optional<double> best;
+    for (const auto& clip : set.clips)
+    {
+        const Track* track = set.findTrack(clip.trackId);
+        const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+        const ClipTiming* timing = timeline_.timingOf(clip.id);
+        if (!grid || timing == nullptr || playhead < timing->startSeconds() || playhead >= timing->endSeconds())
+            continue;
+        const double beat = grid->periodSeconds() / timing->speedAt(playhead);
+        if (clip.id == timeline_.selectedClip())
+            return beat;
+        if (!best)
+            best = beat;
+    }
+    return best.value_or(0.5);
+}
+
+void MainComponent::jumpBeats(int direction)
+{
+    const double distance = beatJumpBox_.getSelectedId() * beatSecondsAtPlayhead();
+    engine_.seek(std::max(0.0, engine_.playheadSeconds() + direction * distance));
+}
+
+void MainComponent::jumpToMix(int direction)
+{
+    // A little before the mix starts, so you hear it come in.
+    constexpr double kLeadIn = 2.0;
+    const double playhead = engine_.playheadSeconds();
+    const auto mixes = timeline_.mixes();
+    if (direction > 0)
+    {
+        for (const auto& [from, to] : mixes)
+            if (from - kLeadIn > playhead + 0.05)
+            {
+                engine_.seek(std::max(0.0, from - kLeadIn));
+                return;
+            }
+    }
+    else
+    {
+        // Pressed just after a jump, go to the one before rather than the same one again.
+        for (auto it = mixes.rbegin(); it != mixes.rend(); ++it)
+            if (it->first - kLeadIn < playhead - 1.0)
+            {
+                engine_.seek(std::max(0.0, it->first - kLeadIn));
+                return;
+            }
+        engine_.seek(0.0);
+    }
+}
 
 void MainComponent::showKeyboardShortcuts()
 {
@@ -775,12 +850,28 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         key(KeyPress::returnKey);
         break;
     case kJumpBack:
-        define("Jump Back", "Move the playhead back 4 seconds", "Transport");
+        define("Rewind", "Jump back by the chosen number of beats", "Transport");
         key(',');
         break;
     case kJumpForward:
-        define("Jump Forward", "Move the playhead forward 4 seconds", "Transport");
+        define("Fast Forward", "Jump forward by the chosen number of beats", "Transport");
         key('.');
+        break;
+    case kStop:
+        define("Stop", "Stop and return to where playback started", "Transport");
+        key(KeyPress::spaceKey, shift);
+        break;
+    case kPreviousMix:
+        define("Previous Mix", "Jump to just before the previous mix", "Transport");
+        key(',', shift);
+        break;
+    case kNextMix:
+        define("Next Mix", "Jump to just before the next mix", "Transport");
+        key('.', shift);
+        break;
+    case kCycleAutomationView:
+        define("Show Next Automation", "Cycle which automation the selected clip's deck shows", "View", hasClip);
+        key('a');
         break;
 
     case kZoomIn:
@@ -962,16 +1053,36 @@ bool MainComponent::perform(const InvocationInfo& info)
     }
 
     case kPlayPause:
-        engine_.isPlaying() ? engine_.pause() : engine_.play();
+        if (engine_.isPlaying())
+            engine_.pause();
+        else
+        {
+            playStartedAt_ = playhead;
+            engine_.play();
+        }
+        break;
+    case kStop:
+        engine_.pause();
+        engine_.seek(playStartedAt_);
+        break;
+    case kPreviousMix:
+        jumpToMix(-1);
+        break;
+    case kNextMix:
+        jumpToMix(1);
+        break;
+    case kCycleAutomationView:
+        if (const auto sel = selection())
+            timeline_.cycleAutomationView(sel.clip->deck);
         break;
     case kGoToStart:
         engine_.seek(0.0);
         break;
     case kJumpBack:
-        engine_.seek(std::max(0.0, playhead - kJumpSeconds));
+        jumpBeats(-1);
         break;
     case kJumpForward:
-        engine_.seek(playhead + kJumpSeconds);
+        jumpBeats(1);
         break;
 
     case kZoomIn:
@@ -1068,11 +1179,11 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
              kGridReset});
         break;
     case 4:
-        add({kPlayPause, kGoToStart, kJumpBack, kJumpForward});
+        add({kPlayPause, kStop, kGoToStart, kJumpBack, kJumpForward, kPreviousMix, kNextMix});
         menu.addSeparator();
         add({kZoomIn, kZoomOut, kZoomSet, kZoomClip, kZoomTransition, kZoomBeats});
         menu.addSeparator();
-        add({kToggleFollow, kToggleKeyNotation});
+        add({kToggleFollow, kToggleKeyNotation, kCycleAutomationView});
         break;
     case 5:
     {
@@ -1152,28 +1263,36 @@ void MainComponent::resized()
     auto area = getLocalBounds();
 
     auto bar = area.removeFromTop(42).reduced(8, 7);
-    playButton_.setBounds(bar.removeFromLeft(70));
-    bar.removeFromLeft(8);
-    timeLabel_.setBounds(bar.removeFromLeft(100));
-    bar.removeFromLeft(12);
-    for (auto [button, width] : {std::pair<juce::Button*, int>{&zoomOutButton_, 30}, {&zoomInButton_, 30},
-                                 {&zoomSetButton_, 50}, {&zoomClipButton_, 50}, {&zoomTransitionButton_, 80},
-                                 {&zoomBeatsButton_, 56}, {&followButton_, 70}})
+    for (auto [button, width] : {std::pair<juce::Component*, int>{&previousMixButton_, 34}, {&rewindButton_, 34},
+                                 {&playButton_, 56}, {&stopButton_, 48}, {&forwardButton_, 34}, {&nextMixButton_, 34},
+                                 {&beatJumpBox_, 92}})
     {
         button->setBounds(bar.removeFromLeft(width));
-        bar.removeFromLeft(4);
+        bar.removeFromLeft(3);
     }
-    settingsButton_.setBounds(bar.removeFromRight(70));
-    bar.removeFromRight(8);
-    decksBox_.setBounds(bar.removeFromRight(90));
-    bar.removeFromRight(8);
-    modeBox_.setBounds(bar.removeFromRight(210));
-    bar.removeFromRight(8);
+    bar.removeFromLeft(6);
+    timeLabel_.setBounds(bar.removeFromLeft(100));
+    bar.removeFromLeft(10);
+    for (auto [button, width] : {std::pair<juce::Button*, int>{&zoomOutButton_, 28}, {&zoomInButton_, 28},
+                                 {&zoomSetButton_, 44}, {&zoomClipButton_, 44}, {&zoomTransitionButton_, 76},
+                                 {&zoomBeatsButton_, 50}, {&followButton_, 66}})
+    {
+        button->setBounds(bar.removeFromLeft(width));
+        bar.removeFromLeft(3);
+    }
+    settingsButton_.setBounds(bar.removeFromRight(64));
+    bar.removeFromRight(6);
+    decksBox_.setBounds(bar.removeFromRight(86));
+    bar.removeFromRight(6);
+    modeBox_.setBounds(bar.removeFromRight(196));
+    bar.removeFromRight(6);
     deviceLabel_.setBounds(bar);
 
-    library_.setBounds(area.removeFromLeft(240));
-    inspector_.setBounds(area.removeFromRight(240));
-    bottomTabs_.setBounds(area.removeFromBottom(150));
+    library_.setBounds(area.removeFromLeft(220));
+    auto right = area.removeFromRight(std::max(250, MixerPanel::preferredWidth(document_.set().numDecks)));
+    inspector_.setBounds(right.removeFromTop(300));
+    mixer_.setBounds(right);
+    bottomTabs_.setBounds(area.removeFromBottom(130));
     timeline_.setBounds(area);
 }
 

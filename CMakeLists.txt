@@ -72,6 +72,7 @@ target_sources(VinylMixPlanner PRIVATE
     src/app/LibraryPanel.cpp
     src/app/Main.cpp
     src/app/MainComponent.cpp
+    src/app/MixerPanel.cpp
     src/app/TimelineView.cpp)
 
 target_compile_definitions(VinylMixPlanner PRIVATE

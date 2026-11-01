@@ -6,6 +6,7 @@
 #include "app/Inspector.h"
 #include "app/IssuesPanel.h"
 #include "app/LibraryPanel.h"
+#include "app/MixerPanel.h"
 #include "app/TimelineView.h"
 #include "core/Document.h"
 #include "engine/Engine.h"
@@ -87,6 +88,11 @@ private:
     // time (seconds) under the playhead, or nullopt when the playhead is outside the clip.
     void editSelectedGrid(const std::function<std::optional<BeatGrid>(const BeatGrid&, std::optional<double>)>& change);
     void showKeyboardShortcuts();
+    // One beat of the music at the playhead (the selected clip if it's playing, else any that
+    // is), for beat jumps. Falls back to 120 BPM.
+    double beatSecondsAtPlayhead() const;
+    void jumpBeats(int direction);
+    void jumpToMix(int direction);
 
     void newSet();
     void openSet();
@@ -120,12 +126,16 @@ private:
 
     TimelineView timeline_;
     Inspector inspector_;
+    MixerPanel mixer_;
     LibraryPanel library_;
     IssuesPanel issues_;
     juce::TextEditor midiLog_;
     juce::TabbedComponent bottomTabs_{juce::TabbedButtonBar::TabsAtTop};
 
-    juce::TextButton playButton_{"Play"};
+    juce::TextButton previousMixButton_{"|<"}, rewindButton_{"<<"}, playButton_{"Play"}, stopButton_{"Stop"},
+        forwardButton_{">>"}, nextMixButton_{">|"};
+    juce::ComboBox beatJumpBox_;
+    double playStartedAt_ = 0.0; // where Stop returns to
     juce::Label timeLabel_;
     juce::TextButton zoomOutButton_{"-"}, zoomInButton_{"+"}, zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
         zoomTransitionButton_{"Transition"}, zoomBeatsButton_{"Beats"};

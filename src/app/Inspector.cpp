@@ -4,7 +4,6 @@
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
 #include "core/Pitch.h"
-#include "engine/MixerChannel.h"
 
 namespace vmp
 {
@@ -12,13 +11,6 @@ namespace vmp
 namespace
 {
 constexpr int kDetectedKeyId = 1; // key menu ids: 1 = detected, then 2 + tonic * 2 + minor
-
-juce::String gainText(float gain)
-{
-    if (gain <= 0.0f)
-        return "kill";
-    return juce::String::formatted("%+.1f dB", 20.0 * std::log10(gain) + 0.0);
-}
 
 const char* pressedText(PressedSpeed speed)
 {
@@ -43,8 +35,8 @@ void setCaption(juce::Label& label, const juce::String& text)
 } // namespace
 
 Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOptions& display,
-                     juce::ApplicationCommandManager& commands, std::function<double()> playhead)
-    : document_(document), pool_(pool), display_(display), commands_(commands), playhead_(std::move(playhead))
+                     juce::ApplicationCommandManager& commands)
+    : document_(document), pool_(pool), display_(display), commands_(commands)
 {
     title_.setFont(juce::FontOptions(15.0f, juce::Font::bold));
     title_.setMinimumHorizontalScale(0.6f);
@@ -91,65 +83,14 @@ Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOption
     setUpCommandButton(forward10_, kNudgeLater, "Slip the record 10 ms later");
     setUpCommandButton(beatForward_, kNudgeBeatLater, "Slip the record one beat later");
 
-    // --- Pitch fader: + toward the DJ (bottom), as on the 1200. 0.05% steps. ---
-    setUpSlider(pitch_, pitchLabel_, "Pitch");
-    pitch_.setSliderStyle(juce::Slider::LinearVertical);
-    pitch_.setNormalisableRange(juce::NormalisableRange<double>(
-        -8.0, 8.0, [](double, double, double proportion) { return 8.0 - 16.0 * proportion; },
-        [](double, double, double value) { return (8.0 - value) / 16.0; },
-        [](double, double, double value) { return std::round(value / kPitchStepPercent) * kPitchStepPercent; }));
-    pitch_.setDoubleClickReturnValue(true, 0.0);
-    pitch_.textFromValueFunction = [](double v) { return juce::String::formatted("%+.2f%%", v + 0.0); };
-    pitch_.valueFromTextFunction = [](const juce::String& s) {
-        return s.retainCharacters("+-.0123456789").getDoubleValue();
-    };
-    pitch_.setTooltip("Pitch. While the clip is under the playhead, the music there stays put. "
-                      "Double-click for 0 (quartz lock).");
-    pitch_.onValueChange = [this] { applyPitch(pitchStepsFromPercent(pitch_.getValue())); };
-
-    addAndMakeVisible(keyShift_);
-    keyShift_.setJustificationType(juce::Justification::centred);
-    keyShift_.setFont(juce::FontOptions(12.0f));
-
-    setUpCommandButton(pitchUp_, kPitchUp, "Pitch up 0.05%");
+    // --- Pitch steps (the fader itself is in the mixer panel) ---
+    setCaption(pitchCaption_, "PITCH");
+    addAndMakeVisible(pitchCaption_);
     setUpCommandButton(pitchDown_, kPitchDown, "Pitch down 0.05%");
     setUpCommandButton(pitchZero_, kPitchReset, "Pitch to 0 (quartz lock)");
-
-    // --- Channel strip ---
-    setUpSlider(fader_, faderLabel_, "Fader");
-    fader_.setSliderStyle(juce::Slider::LinearVertical);
-    fader_.setRange(0.0, 1.0);
-    fader_.setDoubleClickReturnValue(true, 1.0);
-    fader_.textFromValueFunction = [](double v) { return gainText(MixerChannel::faderGain(v)); };
-
-    for (auto [knob, label, name] : {std::tuple{&high_, &highLabel_, "Hi"}, std::tuple{&mid_, &midLabel_, "Mid"},
-                                     std::tuple{&low_, &lowLabel_, "Low"}})
-    {
-        setUpSlider(*knob, *label, name);
-        knob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-        knob->setRange(0.0, 1.0);
-        knob->setDoubleClickReturnValue(true, 0.5);
-        knob->textFromValueFunction = [](double v) { return gainText(MixerChannel::eqGain(v)); };
-    }
-    for (auto* slider : {&fader_, &high_, &mid_, &low_})
-        slider->onValueChange = [this] { applyMixer(); };
+    setUpCommandButton(pitchUp_, kPitchUp, "Pitch up 0.05%");
 
     refresh();
-}
-
-void Inspector::setUpSlider(juce::Slider& slider, juce::Label& label, const juce::String& name)
-{
-    slider.setWantsKeyboardFocus(false);
-    slider.setTextBoxStyle(juce::Slider::TextBoxBelow, true, 70, 18);
-    // A whole drag undoes as one step.
-    slider.onDragStart = [this] { document_.beginGesture(); };
-    slider.onDragEnd = [this] { document_.endGesture(); };
-    addAndMakeVisible(slider);
-
-    label.setText(name, juce::dontSendNotification);
-    label.setJustificationType(juce::Justification::centred);
-    label.setFont(juce::FontOptions(12.0f, juce::Font::bold));
-    addAndMakeVisible(label);
 }
 
 void Inspector::setUpCommandButton(juce::TextButton& button, juce::CommandID command, const juce::String& tooltip)
@@ -182,21 +123,19 @@ juce::String Inspector::harmonyText(const Clip& clip, const Track& track, juce::
     const Set& set = document_.set();
     const ClipTiming timing(clip, track);
     const Clip* other = nullptr;
+    double mixStart = 0.0; // where the two start playing together
     for (const auto& candidate : set.clips)
     {
         const Track* t = set.findTrack(candidate.trackId);
         if (candidate.deck == clip.deck || t == nullptr)
             continue;
-        try
+        const ClipTiming ct(candidate, *t);
+        const bool overlaps = ct.startSeconds() < timing.endSeconds() && timing.startSeconds() < ct.endSeconds();
+        const bool playingAtStart = ct.startSeconds() <= timing.startSeconds() && ct.endSeconds() > timing.startSeconds();
+        if (overlaps && (other == nullptr || playingAtStart))
         {
-            const ClipTiming ct(candidate, *t);
-            const bool overlaps = ct.startSeconds() < timing.endSeconds() && timing.startSeconds() < ct.endSeconds();
-            const bool playingAtStart = ct.startSeconds() <= timing.startSeconds() && ct.endSeconds() > timing.startSeconds();
-            if (overlaps && (other == nullptr || playingAtStart))
-                other = &candidate;
-        }
-        catch (const std::invalid_argument&)
-        {
+            other = &candidate;
+            mixStart = std::max(ct.startSeconds(), timing.startSeconds());
         }
     }
     if (other == nullptr)
@@ -208,8 +147,9 @@ juce::String Inspector::harmonyText(const Clip& clip, const Track& track, juce::
     if (!mine || !theirs)
         return "With " + name + ": key unknown";
 
-    const auto a = pitchedKey(*mine, speedFromPitchSteps(clip.pitchSteps));
-    const auto b = pitchedKey(*theirs, speedFromPitchSteps(other->pitchSteps));
+    // Compared as heard where the mix starts, after any pitch automation up to then.
+    const auto a = pitchedKey(*mine, timing.speedAt(mixStart));
+    const auto b = pitchedKey(*theirs, ClipTiming(*other, otherTrack).speedAt(mixStart));
     const auto relation = harmony(a.key, b.key);
     const double detune = std::abs(a.cents - b.cents);
 
@@ -240,13 +180,14 @@ void Inspector::refresh()
         details_.setText("Drop audio files on a deck lane, or double-click a file in the library. "
                          "Keys 1-4 select the record on that deck at the playhead.",
                          juce::dontSendNotification);
-        for (auto* label : {&tempo_, &key_, &harmony_, &keyShift_, &bpm_})
+        for (auto* label : {&tempo_, &key_, &harmony_, &bpm_})
             label->setText({}, juce::dontSendNotification);
         keyBox_.clear(juce::dontSendNotification);
         return;
     }
 
-    const double speed = speedFromPitchSteps(clip->pitchSteps);
+    const ClipTiming clipTiming(*clip, *track);
+    const double speed = clipTiming.speedAt(clipTiming.startSeconds()); // as it comes in
     title_.setText(juce::CharPointer_UTF8(track->title.c_str()), juce::dontSendNotification);
     juce::String details = "Deck " + juce::String(clip->deck + 1) + "   pressed at " + pressedText(track->pressed);
     try
@@ -296,27 +237,6 @@ void Inspector::refresh()
     harmony_.setText(harmonyText(*clip, *track, colour), juce::dontSendNotification);
     harmony_.setColour(juce::Label::textColourId, colour);
 
-    // Faders.
-    pitch_.setValue(pitchPercentFromSteps(clip->pitchSteps), juce::dontSendNotification);
-    keyShift_.setText(juce::String::formatted("%+.2f st", semitoneShiftForSpeed(speed) + 0.0), juce::dontSendNotification);
-    fader_.setValue(clip->mixer.fader, juce::dontSendNotification);
-    high_.setValue(clip->mixer.high, juce::dontSendNotification);
-    mid_.setValue(clip->mixer.mid, juce::dontSendNotification);
-    low_.setValue(clip->mixer.low, juce::dontSendNotification);
-}
-
-void Inspector::applyPitch(int steps)
-{
-    const Id id = clip_;
-    const double pivot = playhead_();
-    document_.edit([&](Set& s) { return edit::setClipPitch(s, id, steps, pivot); });
-}
-
-void Inspector::applyMixer()
-{
-    const Id id = clip_;
-    const ChannelSettings settings{fader_.getValue(), high_.getValue(), mid_.getValue(), low_.getValue()};
-    document_.edit([&](Set& s) { return edit::setClipMixer(s, id, settings); });
 }
 
 void Inspector::applyBpm(const juce::String& text)
@@ -385,26 +305,9 @@ void Inspector::resized()
 
     nudgeCaption_.setBounds(row(16));
     buttonRow(row(22), {&beatBack_, &back10_, &back1_, &forward1_, &forward10_, &beatForward_});
-    area.removeFromTop(6);
 
-    // Pitch column on the left, channel strip on the right.
-    auto pitchColumn = area.removeFromLeft(area.getWidth() / 2);
-    pitchLabel_.setBounds(pitchColumn.removeFromTop(18));
-    auto buttons = pitchColumn.removeFromBottom(24);
-    buttonRow(buttons, {&pitchDown_, &pitchZero_, &pitchUp_});
-    keyShift_.setBounds(pitchColumn.removeFromBottom(20));
-    pitch_.setBounds(pitchColumn);
-
-    auto strip = area;
-    const int knobHeight = std::min(76, strip.getHeight() / 5);
-    for (auto [knob, label] : {std::pair{&high_, &highLabel_}, std::pair{&mid_, &midLabel_}, std::pair{&low_, &lowLabel_}})
-    {
-        auto r = strip.removeFromTop(knobHeight);
-        label->setBounds(r.removeFromTop(16));
-        knob->setBounds(r);
-    }
-    faderLabel_.setBounds(strip.removeFromTop(18));
-    fader_.setBounds(strip);
+    pitchCaption_.setBounds(row(16));
+    buttonRow(row(22), {&pitchDown_, &pitchZero_, &pitchUp_});
 }
 
 } // namespace vmp

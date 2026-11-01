@@ -9,7 +9,8 @@
 namespace vmp
 {
 
-inline constexpr int kSetFormatVersion = 1;
+// 2: per-control automation keypoints (1 had unused "pitchMoves"). Older versions still load.
+inline constexpr int kSetFormatVersion = 2;
 inline constexpr const char* kSetFileExtension = ".vmpset";
 
 class SetFileError : public std::runtime_error

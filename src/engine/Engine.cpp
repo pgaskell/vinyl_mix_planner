@@ -119,7 +119,8 @@ void Engine::renderLane(const std::vector<ScheduledClip>& lane, size_t deck, dou
         {
             player.render(active->audio.get(), active->timing.sourceFrameAt(t),
                           active->timing.sourceFrameAt(t + frames / sampleRate_), left + done, right + done, frames);
-            laneMixer_[deck] = active->mixer;
+            // Automation is read once per segment; the mixer channel glides between blocks.
+            laneMixer_[deck] = mixerAt(active->clip, active->timing.sourceFrameAt(t));
         }
         else
         {

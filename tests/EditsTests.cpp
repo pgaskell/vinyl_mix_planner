@@ -82,13 +82,92 @@ TEST_CASE("Trimming the start keeps the music in place")
     CHECK(onlyClip(set).startSeconds == Approx(100.0).margin(1e-6));
 }
 
-TEST_CASE("Start trim stops at the first pitch move")
+TEST_CASE("Trimming the start past pitch keypoints keeps the music in place")
 {
     auto set = makeSet();
     const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
-    set.clips.front().pitchMoves.push_back({frames(60.0), 4.0, 100});
-    REQUIRE(edit::trimClipStart(set, id, 90.0));
-    CHECK(onlyClip(set).inFrame == frames(60.0));
+    set.clips.front().points(Param::Pitch) = {{frames(60.0), 0.0}, {frames(70.0), 100.0}};
+    const ClipTiming before(onlyClip(set), set.tracks.front());
+    const double later = before.timelineSecondsAt(static_cast<double>(frames(100.0)));
+
+    REQUIRE(edit::trimClipStart(set, id, before.timelineSecondsAt(static_cast<double>(frames(65.0)))));
+    const ClipTiming after(onlyClip(set), set.tracks.front());
+    CHECK(after.timelineSecondsAt(static_cast<double>(frames(100.0))) == Approx(later).margin(1e-4));
+}
+
+TEST_CASE("Keypoints are added, replaced, moved between neighbours and deleted")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
+    auto points = [&] { return onlyClip(set).points(Param::Volume); };
+
+    REQUIRE(edit::setAutomationPoint(set, id, Param::Volume, 2000, 0.4));
+    REQUIRE(edit::setAutomationPoint(set, id, Param::Volume, 1000, 1.7)); // clamped, sorted in
+    REQUIRE(edit::setAutomationPoint(set, id, Param::Volume, 2000, 0.2)); // replaces
+    REQUIRE(points().size() == 2);
+    CHECK(points()[0] == AutomationPoint{1000, 1.0});
+    CHECK(points()[1] == AutomationPoint{2000, 0.2});
+
+    REQUIRE(edit::moveAutomationPoint(set, id, Param::Volume, 0, 5000, 0.5)); // can't pass its neighbour
+    CHECK(points()[0] == AutomationPoint{2000, 0.5});
+
+    REQUIRE(edit::deleteAutomationPoint(set, id, Param::Volume, 1));
+    CHECK(points().size() == 1);
+    CHECK_FALSE(edit::deleteAutomationPoint(set, id, Param::Volume, 5));
+}
+
+TEST_CASE("Pitch keypoints are whole steps within +/-8%")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
+    REQUIRE(edit::setAutomationPoint(set, id, Param::Pitch, 1000, 12.4));
+    REQUIRE(edit::setAutomationPoint(set, id, Param::Pitch, 2000, 900.0));
+    CHECK(onlyClip(set).points(Param::Pitch)[0].value == 12.0);
+    CHECK(onlyClip(set).points(Param::Pitch)[1].value == 160.0);
+}
+
+TEST_CASE("Clearing automation keeps the value the clip started with")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
+    edit::setAutomationPoint(set, id, Param::Low, 0, 0.1);
+    edit::setAutomationPoint(set, id, Param::Low, 50000, 0.9);
+    REQUIRE(edit::clearAutomation(set, id, Param::Low));
+    CHECK(onlyClip(set).points(Param::Low).empty());
+    CHECK(onlyClip(set).mixer.low == Approx(0.1));
+}
+
+TEST_CASE("A control without keypoints sets the starting value; with keypoints it writes at the playhead")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 10.0);
+
+    REQUIRE(edit::setParamAt(set, id, Param::Mid, 0.3, 20.0));
+    CHECK(onlyClip(set).mixer.mid == 0.3);
+    CHECK(onlyClip(set).points(Param::Mid).empty());
+
+    edit::setAutomationPoint(set, id, Param::Mid, 0, 0.5);
+    REQUIRE(edit::setParamAt(set, id, Param::Mid, 0.9, 20.0)); // 10 s into the record
+    REQUIRE(onlyClip(set).points(Param::Mid).size() == 2);
+    CHECK(onlyClip(set).points(Param::Mid)[1] == AutomationPoint{frames(10.0), 0.9});
+
+    // Close to an existing keypoint, it updates that one rather than adding another.
+    REQUIRE(edit::setParamAt(set, id, Param::Mid, 0.7, 20.005));
+    REQUIRE(onlyClip(set).points(Param::Mid).size() == 2);
+    CHECK(onlyClip(set).points(Param::Mid)[1].value == 0.7);
+
+    CHECK_FALSE(edit::setParamAt(set, id, Param::Mid, 0.2, 5.0)); // playhead outside the clip
+}
+
+TEST_CASE("Writing pitch automation keeps the music under the playhead in place")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 10.0);
+    edit::setAutomationPoint(set, id, Param::Pitch, 0, 0.0);
+    const double frameAtPlayhead = ClipTiming(onlyClip(set), set.tracks.front()).sourceFrameAt(70.0);
+
+    REQUIRE(edit::setParamAt(set, id, Param::Pitch, 80.0, 70.0));
+    CHECK(ClipTiming(onlyClip(set), set.tracks.front()).sourceFrameAt(70.0) == Approx(frameAtPlayhead).margin(0.5));
 }
 
 TEST_CASE("Trimming the end is limited by the record")

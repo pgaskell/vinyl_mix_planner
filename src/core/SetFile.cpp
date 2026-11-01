@@ -29,6 +29,24 @@ const char* pressedToString(PressedSpeed speed)
     return "unknown";
 }
 
+const char* paramKey(Param param)
+{
+    switch (param)
+    {
+    case Param::Pitch:
+        return "pitch";
+    case Param::Volume:
+        return "volume";
+    case Param::High:
+        return "high";
+    case Param::Mid:
+        return "mid";
+    case Param::Low:
+        return "low";
+    }
+    return "?";
+}
+
 PressedSpeed pressedFromString(const std::string& s)
 {
     if (s == "33")
@@ -62,9 +80,18 @@ std::string setToJson(const Set& set)
     json clips = json::array();
     for (const auto& c : set.clips)
     {
-        json moves = json::array();
-        for (const auto& m : c.pitchMoves)
-            moves.push_back({{"frame", m.sourceFrame}, {"duration", m.durationSeconds}, {"pitchSteps", m.targetSteps}});
+        // Only automated controls are written: {"pitch": [[frame, value], ...], ...}
+        json automation = json::object();
+        for (int p = 0; p < kNumParams; ++p)
+        {
+            const auto param = static_cast<Param>(p);
+            if (c.points(param).empty())
+                continue;
+            json points = json::array();
+            for (const auto& point : c.points(param))
+                points.push_back({point.sourceFrame, point.value});
+            automation[paramKey(param)] = points;
+        }
 
         clips.push_back({{"id", c.id},
                          {"track", c.trackId},
@@ -73,7 +100,7 @@ std::string setToJson(const Set& set)
                          {"in", c.inFrame},
                          {"out", c.outFrame},
                          {"pitchSteps", c.pitchSteps},
-                         {"pitchMoves", moves},
+                         {"automation", automation},
                          {"mixer",
                           {{"fader", c.mixer.fader}, {"high", c.mixer.high}, {"mid", c.mixer.mid}, {"low", c.mixer.low}}}});
     }
@@ -148,9 +175,18 @@ Set setFromJson(const std::string& text)
             clip.inFrame = c.at("in").get<int64_t>();
             clip.outFrame = c.at("out").get<int64_t>();
             clip.pitchSteps = c.at("pitchSteps").get<int>();
-            for (const auto& m : c.at("pitchMoves"))
-                clip.pitchMoves.push_back({m.at("frame").get<int64_t>(), m.at("duration").get<double>(),
-                                           m.at("pitchSteps").get<int>()});
+            // Version 1 had "pitchMoves" instead, which the app never let you create: ignored.
+            if (c.contains("automation"))
+                for (int p = 0; p < kNumParams; ++p)
+                {
+                    const auto param = static_cast<Param>(p);
+                    if (!c["automation"].contains(paramKey(param)))
+                        continue;
+                    for (const auto& point : c["automation"][paramKey(param)])
+                        clip.points(param).push_back({point.at(0).get<int64_t>(), point.at(1).get<double>()});
+                    std::stable_sort(clip.points(param).begin(), clip.points(param).end(),
+                                     [](const auto& a, const auto& b) { return a.sourceFrame < b.sourceFrame; });
+                }
             const auto& mixer = c.at("mixer");
             clip.mixer = {mixer.at("fader").get<double>(), mixer.at("high").get<double>(),
                           mixer.at("mid").get<double>(), mixer.at("low").get<double>()};

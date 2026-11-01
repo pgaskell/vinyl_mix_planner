@@ -3,6 +3,7 @@
 #include "core/Musical.h"
 #include "core/PitchCurve.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -43,16 +44,6 @@ struct Track
     bool operator==(const Track&) const = default;
 };
 
-// A fader move during a clip, anchored to a position in the music.
-struct PitchMove
-{
-    int64_t sourceFrame = 0;     // where in the track the move starts
-    double durationSeconds = 0;  // real time the move takes; 0 is a jump
-    int targetSteps = 0;
-
-    bool operator==(const PitchMove&) const = default;
-};
-
 // Mixer channel controls, stored as positions (0..1) as on the hardware rather than as gains.
 // The mixer model decides what a position sounds like, so a set planned with one mixer can be
 // played back through another. EQ knobs: 0.5 is the centre detent.
@@ -66,6 +57,34 @@ struct ChannelSettings
     bool operator==(const ChannelSettings&) const = default;
 };
 
+// The controls that can be automated during a clip.
+enum class Param
+{
+    Pitch,  // in 0.05% steps
+    Volume, // channel fader position, 0..1
+    High,   // EQ knob positions, 0..1, centre 0.5
+    Mid,
+    Low
+};
+inline constexpr int kNumParams = 5;
+
+struct ParamRange
+{
+    double min, max;
+};
+ParamRange paramRange(Param param);
+const char* paramName(Param param);
+
+// A keypoint: the control's value at a position in the music. Values slide linearly between
+// consecutive keypoints.
+struct AutomationPoint
+{
+    int64_t sourceFrame = 0;
+    double value = 0.0;
+
+    bool operator==(const AutomationPoint&) const = default;
+};
+
 // A track played on a deck: needle drop at inFrame at timeline time startSeconds, played until
 // outFrame (needle up or fader closed).
 struct Clip
@@ -76,12 +95,26 @@ struct Clip
     double startSeconds = 0.0;
     int64_t inFrame = 0;
     int64_t outFrame = 0;
-    int pitchSteps = 0; // fader position at the needle drop
-    std::vector<PitchMove> pitchMoves;
-    ChannelSettings mixer; // channel settings when the clip starts
+    // Starting values, used for a control while it has no keypoints.
+    int pitchSteps = 0;
+    ChannelSettings mixer;
+    // Keypoints per Param, sorted by sourceFrame. Two points at one frame make a jump.
+    std::array<std::vector<AutomationPoint>, kNumParams> automation;
+
+    const std::vector<AutomationPoint>& points(Param p) const { return automation[static_cast<size_t>(p)]; }
+    std::vector<AutomationPoint>& points(Param p) { return automation[static_cast<size_t>(p)]; }
 
     bool operator==(const Clip&) const = default;
 };
+
+// The clip's starting value for a control.
+double baseValue(const Clip& clip, Param param);
+// A control's value at a position in the music: the starting value when it has no keypoints,
+// otherwise linear between keypoints, holding the first before it and the last after it.
+// (Pitch slides are linear in time, which ClipTiming models exactly; this is the source-linear
+// approximation, fine for display.)
+double valueAt(const Clip& clip, Param param, double sourceFrame);
+ChannelSettings mixerAt(const Clip& clip, double sourceFrame);
 
 struct Set
 {
@@ -98,7 +131,7 @@ struct Set
     bool operator==(const Set&) const = default;
 };
 
-// Timeline <-> source mapping for one clip. Throws std::invalid_argument for invalid pitch moves.
+// Timeline <-> source mapping for one clip, including its pitch automation.
 class ClipTiming
 {
 public:

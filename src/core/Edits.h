@@ -37,6 +37,24 @@ bool setClipPitch(Set& set, Id clipId, int pitchSteps, std::optional<double> piv
 
 bool setClipMixer(Set& set, Id clipId, const ChannelSettings& settings);
 
+// --- Automation. Values are clamped to the control's range; pitch to whole steps. ---
+
+// Within this distance, a control change at the playhead updates the existing keypoint.
+inline constexpr double kKeypointSnapSeconds = 0.010;
+
+// Adds a keypoint, or replaces the one at exactly that frame.
+bool setAutomationPoint(Set& set, Id clipId, Param param, int64_t sourceFrame, double value);
+// Moves keypoint `index`; it stays between its neighbours, so indexes don't change.
+bool moveAutomationPoint(Set& set, Id clipId, Param param, size_t index, int64_t sourceFrame, double value);
+bool deleteAutomationPoint(Set& set, Id clipId, Param param, size_t index);
+// Removes all keypoints; the value at the start of the clip becomes its starting value.
+bool clearAutomation(Set& set, Id clipId, Param param);
+
+// What turning a control on the mixer does. With no keypoints it changes the clip's starting
+// value; with keypoints it sets one at the music under the playhead (so moving a control while
+// playing records automation). Pitch changes keep the music under the playhead in place.
+bool setParamAt(Set& set, Id clipId, Param param, double value, double playheadSeconds);
+
 bool setNumDecks(Set& set, int numDecks);
 
 // Corrections to the analysis; nullopt goes back to the detected values.

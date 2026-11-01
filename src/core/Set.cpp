@@ -3,8 +3,8 @@
 #include "core/Pitch.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
-#include <stdexcept>
 
 namespace vmp
 {
@@ -21,18 +21,86 @@ const Clip* Set::findClip(Id id) const
     return it == clips.end() ? nullptr : &*it;
 }
 
+// --- Automation -------------------------------------------------------------
+
+ParamRange paramRange(Param param)
+{
+    if (param == Param::Pitch)
+        return {-kMaxPitchSteps, kMaxPitchSteps};
+    return {0.0, 1.0};
+}
+
+const char* paramName(Param param)
+{
+    switch (param)
+    {
+    case Param::Pitch:
+        return "Pitch";
+    case Param::Volume:
+        return "Volume";
+    case Param::High:
+        return "Hi";
+    case Param::Mid:
+        return "Mid";
+    case Param::Low:
+        return "Low";
+    }
+    return "?";
+}
+
+double baseValue(const Clip& clip, Param param)
+{
+    switch (param)
+    {
+    case Param::Pitch:
+        return clip.pitchSteps;
+    case Param::Volume:
+        return clip.mixer.fader;
+    case Param::High:
+        return clip.mixer.high;
+    case Param::Mid:
+        return clip.mixer.mid;
+    case Param::Low:
+        return clip.mixer.low;
+    }
+    return 0.0;
+}
+
+double valueAt(const Clip& clip, Param param, double sourceFrame)
+{
+    const auto& points = clip.points(param);
+    if (points.empty())
+        return baseValue(clip, param);
+    auto next = std::upper_bound(points.begin(), points.end(), sourceFrame,
+                                 [](double frame, const AutomationPoint& p) { return frame < static_cast<double>(p.sourceFrame); });
+    if (next == points.begin())
+        return points.front().value;
+    const auto& before = *std::prev(next);
+    if (next == points.end())
+        return before.value;
+    const double span = static_cast<double>(next->sourceFrame - before.sourceFrame);
+    const double fraction = (sourceFrame - static_cast<double>(before.sourceFrame)) / span;
+    return before.value + (next->value - before.value) * fraction;
+}
+
+ChannelSettings mixerAt(const Clip& clip, double sourceFrame)
+{
+    return {valueAt(clip, Param::Volume, sourceFrame), valueAt(clip, Param::High, sourceFrame),
+            valueAt(clip, Param::Mid, sourceFrame), valueAt(clip, Param::Low, sourceFrame)};
+}
+
 // --- ClipTiming -------------------------------------------------------------
 
 namespace
 {
 PitchCurve makeCurve(const Clip& clip, const Track& track)
 {
-    std::vector<PitchCurve::Move> moves;
-    moves.reserve(clip.pitchMoves.size());
-    for (const auto& m : clip.pitchMoves)
-        moves.push_back({static_cast<double>(m.sourceFrame - clip.inFrame) / track.sampleRate,
-                         m.durationSeconds, m.targetSteps});
-    return PitchCurve(clip.pitchSteps, std::move(moves));
+    std::vector<PitchCurve::Point> points;
+    points.reserve(clip.points(Param::Pitch).size());
+    for (const auto& p : clip.points(Param::Pitch))
+        points.push_back({static_cast<double>(p.sourceFrame - clip.inFrame) / track.sampleRate,
+                          1.0 + p.value * kPitchStepPercent / 100.0});
+    return PitchCurve(speedFromPitchSteps(clip.pitchSteps), std::move(points));
 }
 } // namespace
 
@@ -128,23 +196,16 @@ std::vector<Issue> validate(const Set& set)
         }
 
         bool pitchOk = pitchInRange(clip.pitchSteps);
-        for (const auto& move : clip.pitchMoves)
-            pitchOk = pitchOk && pitchInRange(move.targetSteps);
+        for (const auto& point : clip.points(Param::Pitch))
+            pitchOk = pitchOk && std::abs(point.value) <= kMaxPitchSteps;
         if (!pitchOk)
         {
             report(kError, name + " uses a pitch beyond the MK2's +/-8%.", {clip.id});
             continue;
         }
 
-        try
-        {
-            const ClipTiming timing(clip, *track);
-            placed.push_back({&clip, track, timing.startSeconds(), timing.endSeconds()});
-        }
-        catch (const std::invalid_argument& e)
-        {
-            report(kError, name + ": " + e.what() + ".", {clip.id});
-        }
+        const ClipTiming timing(clip, *track);
+        placed.push_back({&clip, track, timing.startSeconds(), timing.endSeconds()});
     }
 
     // One record at a time per turntable, with time to change it.
