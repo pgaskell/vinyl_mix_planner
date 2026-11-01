@@ -20,10 +20,10 @@ namespace vmp
 // Drag a clip to move it in time or to another deck, drag its edges to trim. Click the ruler
 // to move the playhead. Cmd+scroll or pinch to zoom, scroll to pan.
 //
-// Each lane can show one control's automation over its waveforms (menu in the lane header). Then
-// the clip body edits automation: click to add a keypoint, drag to move it, double-click to
-// delete, right-click for more; the square at the clip start is the starting value. Clips are
-// moved and trimmed by their title bar.
+// Each lane can show any of its controls' automation over the waveforms (check boxes in the lane
+// header). Click on a line to add a keypoint there and drag it; drag keypoints to move them,
+// double-click to delete, right-click a line or keypoint for more. The square at the clip start
+// is the starting value. Clicking anywhere else moves the clip as usual.
 //
 // While playing, the view follows the playhead unless you scroll or zoom away; it picks up again
 // once the playhead comes back into view, or on showPlayhead().
@@ -61,10 +61,10 @@ public:
     // Spans where two or more decks play together, in time order.
     std::vector<std::pair<double, double>> mixes() const;
 
-    std::optional<Param> automationView(int deck) const { return automationView_[static_cast<size_t>(deck)]; }
-    void setAutomationView(int deck, std::optional<Param> param);
-    // None -> Pitch -> Volume -> Hi -> Mid -> Low -> None.
-    void cycleAutomationView(int deck);
+    bool showsAutomation(int deck, Param param) const;
+    void setShowsAutomation(int deck, Param param, bool show);
+    // Shows every control's automation on the deck, or hides them all if any is showing.
+    void toggleAllAutomation(int deck);
 
     // Brings the playhead into view and resumes following it.
     void showPlayhead();
@@ -93,7 +93,7 @@ public:
     void itemDropped(const SourceDetails& details) override;
 
 private:
-    static constexpr int kHeaderWidth = 96;
+    static constexpr int kHeaderWidth = 112;
     static constexpr int kRulerHeight = 26;
     static constexpr int kEdgeGrab = 6;
 
@@ -123,9 +123,9 @@ private:
     int numDecks() const { return document_.set().numDecks; }
     juce::Rectangle<int> laneBounds(int deck) const;
     juce::Rectangle<int> waveformBounds(int deck) const;
-    // The part of the lane where automation is edited (below clip title bars); empty when the
-    // lane isn't showing automation.
+    // Where automation lines are drawn (below clip title bars); empty when the lane shows none.
     juce::Rectangle<int> automationBounds(int deck) const;
+    bool anyAutomationShown(int deck) const;
     int deckAt(int y) const; // -1 outside the lanes
     double timeToX(double t) const { return kHeaderWidth + (t - viewStart_) * pixelsPerSecond_; }
     double xToTime(double x) const { return viewStart_ + (x - kHeaderWidth) / pixelsPerSecond_; }
@@ -137,15 +137,24 @@ private:
     Hit clipAt(juce::Point<float> position) const;
     void dropFiles(const juce::Array<juce::File>& files, int x, int y);
 
-    // Automation strip editing.
-    double valueToY(Param param, double value, juce::Rectangle<int> strip) const;
-    double yToValue(Param param, double y, juce::Rectangle<int> strip) const;
-    Id clipInStripAt(int deck, double x) const;
-    // Index of the keypoint at a position, or kStartPoint for the starting value.
-    static constexpr int kStartPoint = -1;
-    std::optional<int> keypointAt(const Clip& clip, Param param, juce::Point<float> position) const;
-    void stripMouseDown(const juce::MouseEvent& e, int deck);
-    void showStripMenu(Id clip, Param param, std::optional<int> keypoint);
+    // Automation editing.
+    static constexpr int kStartPoint = -1; // keypoint index meaning the starting value
+    struct AutomationHit
+    {
+        Id clip;
+        Param param;
+        std::optional<int> keypoint; // empty: on the line between keypoints
+        int64_t frame;               // where on the line, for adding a keypoint
+        double value;
+    };
+    double valueToY(Param param, double value, juce::Rectangle<int> area) const;
+    double yToValue(Param param, double y, juce::Rectangle<int> area) const;
+    Id clipAtTime(int deck, double x) const;
+    std::vector<juce::Point<float>> automationVertices(const Clip& clip, const ClipTiming& timing, Param param,
+                                                       juce::Rectangle<int> area) const;
+    std::optional<AutomationHit> automationAt(juce::Point<float> position) const;
+    void automationMouseDown(const juce::MouseEvent& e, const AutomationHit& hit);
+    void showAutomationMenu(Id clip, Param param, std::optional<int> keypoint);
     void navigatedByHand() { followSuspended_ = engine_.isPlaying(); }
 
     void paintRuler(juce::Graphics& g);
@@ -173,8 +182,8 @@ private:
     std::map<Id, Issue::Severity> issues_;
     std::vector<std::pair<double, double>> transitions_; // spans where two decks play
 
-    std::array<std::optional<Param>, kMaxDecks> automationView_;
-    std::array<juce::ComboBox, kMaxDecks> viewBoxes_;
+    std::array<std::array<bool, kNumParams>, kMaxDecks> shown_{};
+    std::array<std::array<juce::ToggleButton, kNumParams>, kMaxDecks> toggles_;
 
     Drag drag_ = Drag::None;
     Clip dragOrigin_;

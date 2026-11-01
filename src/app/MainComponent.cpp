@@ -887,7 +887,7 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         key('.', shift);
         break;
     case kCycleAutomationView:
-        define("Show Next Automation", "Cycle which automation the selected clip's deck shows", "View", hasClip);
+        define("Show / Hide Automation", "Show or hide all automation on the selected clip's deck", "View", hasClip);
         key('a');
         break;
 
@@ -1099,7 +1099,7 @@ bool MainComponent::perform(const InvocationInfo& info)
         break;
     case kCycleAutomationView:
         if (const auto sel = selection())
-            timeline_.cycleAutomationView(sel.clip->deck);
+            timeline_.toggleAllAutomation(sel.clip->deck);
         break;
     case kGoToStart:
         engine_.seek(0.0);
