@@ -12,6 +12,19 @@ here will work on the decks.
 
 ![Zoomed in on a transition: beat lines on both decks show the records in phase](docs/images/Vinyl_Mix_Planner_Close.png)
 
+## Download and open
+
+1. Download the zip from the [latest release](https://github.com/pgaskell/vinyl_mix_planner/releases),
+   unzip it, and move **Vinyl Mix Planner** to your Applications folder.
+2. Double-click it. macOS will block it, because the app isn't signed by Apple yet. Click **Done**.
+3. Open **System Settings → Privacy & Security**, scroll down to the message about
+   Vinyl Mix Planner, and click **Open Anyway**. Confirm with your password.
+
+You only need to do this once. On macOS 14 or earlier you can instead right-click the app,
+choose **Open**, and click **Open** again.
+
+Needs macOS 11 or later, on Apple Silicon or Intel.
+
 ## What it does
 
 - A timeline with a lane per deck, 3-band waveforms and beat lines for matching by eye
