@@ -84,6 +84,9 @@ DJM-900NXS2, and generic Core Audio devices).
 - Deck slews to small position changes (<100 ms, +/-10% speed) instead of jumping, so live nudges and
   pitch changes (which pivot on the playhead) sound like a real platter.
 - `Command` ids (app/Commands.h) are stored in saved key mappings: append, never renumber.
+- Backwards compatibility is for the developer's own sets and settings only, until a public release.
+  Any shim that keeps old files or settings working must be listed in TODO.md under
+  "Before a public release: drop backwards compatibility", so it can be removed in one go.
 - Drivers only pass enabled channels: always route through the physical->buffer map.
 
 ## Building on this machine

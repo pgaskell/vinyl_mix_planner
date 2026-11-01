@@ -43,3 +43,18 @@
 - Export the mix to an audio file (WAV, AIFF, FLAC).
 - Decode cache: a setting for its size limit (fixed at 10 GB) and a button to clear it.
 - Sign and notarise the app so it opens without the security warning.
+
+## Before a public release: drop backwards compatibility
+
+Shims that exist only so sets and settings made during development keep working. Remove them
+(and their tests) when other people start using the app, and start the set format again at 1.
+
+- `core/SetFile.cpp`: loading version 1 sets (no automation; an unused `"pitchMoves"` field is
+  ignored). Test: "Version 1 sets still open".
+- `core/SetFile.cpp`: sets from before version 3 have pitch in 0.05% steps and no
+  `"pitchStepPercent"`; they're converted on load (×2.5). Keep writing `"pitchStepPercent"`.
+  Test: "Version 2 sets keep their pitch exactly…".
+- `app/Commands.h`: command ids are append-only because saved key mappings store them. Renumber
+  into a tidy order once, then freeze.
+- Settings live in `~/Library/Application Support/VinylMixPlanner`, the decode cache under the
+  bundle id (`org.vinylmixplanner.app`). Move settings to the bundle id too, without migrating.
