@@ -2,6 +2,8 @@
 
 #include "core/Set.h"
 
+#include <optional>
+
 namespace vmp::edit
 {
 
@@ -28,11 +30,17 @@ bool moveClip(Set& set, Id clipId, double startSeconds, int deck);
 bool trimClipStart(Set& set, Id clipId, double newStartSeconds);
 bool trimClipEnd(Set& set, Id clipId, double newEndSeconds);
 
-// Changes the starting fader position. The needle drop stays put; everything after it stretches.
-bool setClipPitch(Set& set, Id clipId, int pitchSteps);
+// Changes the pitch the clip starts with. The music at `pivotSeconds` stays where it is, as when
+// you move the pitch fader on a playing deck; without a pivot (or outside the clip) the needle
+// drop stays put and everything after it stretches.
+bool setClipPitch(Set& set, Id clipId, int pitchSteps, std::optional<double> pivotSeconds = std::nullopt);
 
 bool setClipMixer(Set& set, Id clipId, const ChannelSettings& settings);
 
 bool setNumDecks(Set& set, int numDecks);
+
+// Corrections to the analysis; nullopt goes back to the detected values.
+bool setTrackGrid(Set& set, Id trackId, std::optional<BeatGrid> grid);
+bool setTrackKey(Set& set, Id trackId, std::optional<MusicalKey> key);
 
 } // namespace vmp::edit

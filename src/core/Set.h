@@ -1,8 +1,10 @@
 #pragma once
 
+#include "core/Musical.h"
 #include "core/PitchCurve.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,9 @@ struct Track
     int64_t frames = 0; // length of the decoded file
     double sampleRate = 44100.0;
     PressedSpeed pressed = PressedSpeed::Unknown;
+    // The DJ's corrections. When unset, the analysis results for the file are used.
+    std::optional<BeatGrid> grid;
+    std::optional<MusicalKey> key;
 
     bool operator==(const Track&) const = default;
 };

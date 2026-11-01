@@ -38,7 +38,7 @@ struct Fixture
         const std::string path = "/track" + std::to_string(audio.size());
         audio[path] = track;
         const Id trackId =
-            edit::addTrack(set, {0, path, path, track->frames, track->sampleRate, PressedSpeed::Unknown});
+            edit::addTrack(set, {0, path, path, track->frames, track->sampleRate, PressedSpeed::Unknown, {}, {}});
         const Id clipId = edit::addClip(set, trackId, deck, start);
         edit::setClipPitch(set, clipId, pitch);
         return clipId;

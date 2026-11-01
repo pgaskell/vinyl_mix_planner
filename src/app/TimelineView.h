@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/AudioPool.h"
+#include "app/Display.h"
 #include "core/Document.h"
 #include "engine/Engine.h"
 
@@ -13,13 +14,14 @@
 namespace vmp
 {
 
-// One lane per deck, clips drawn as waveforms on a shared time axis (seconds, no tempo grid).
+// One lane per deck, clips drawn as 3-band waveforms on a shared time axis (seconds, no tempo
+// grid). Each clip shows its own beat lines once zoomed in far enough to judge phase.
 // Drag a clip to move it in time or to another deck, drag its edges to trim. Click the ruler
 // to move the playhead. Cmd+scroll or pinch to zoom, scroll to pan.
 class TimelineView : public juce::Component, public juce::FileDragAndDropTarget, public juce::DragAndDropTarget
 {
 public:
-    TimelineView(SetDocument& document, AudioPool& pool, Engine& engine);
+    TimelineView(SetDocument& document, AudioPool& pool, Engine& engine, const DisplayOptions& display);
 
     // The set or loaded audio changed.
     void refresh();
@@ -38,6 +40,15 @@ public:
     void zoomToSet();
     void zoomToClip();
     void zoomToTransition();
+    // Centres on the playhead, showing two bars of the music playing there.
+    void zoomToBeats();
+
+    // The clip on a deck at the given time, or failing that the next one after it, or the
+    // last one before it. 0 if the deck is empty.
+    Id clipOnDeckNear(int deck, double seconds) const;
+    // Clips in start order, for stepping through with the keyboard.
+    std::vector<Id> clipsInOrder() const;
+    const ClipTiming* timingOf(Id clip) const;
     void setFollowPlayhead(bool follow) { follow_ = follow; }
     bool followsPlayhead() const { return follow_; }
 
@@ -104,10 +115,13 @@ private:
     void paintClip(juce::Graphics& g, const Clip& clip, const ClipTiming& timing);
     void paintWaveform(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const WaveformPeaks& peaks,
                        juce::Rectangle<int> area);
+    void paintBeats(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const Track& track,
+                    const BeatGrid& grid, juce::Rectangle<int> area);
 
     SetDocument& document_;
     AudioPool& pool_;
     Engine& engine_;
+    const DisplayOptions& display_;
 
     double pixelsPerSecond_ = 2.0;
     double viewStart_ = -10.0;

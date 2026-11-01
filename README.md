@@ -5,10 +5,12 @@ Plan vinyl DJ sets from audio files, limited to what a Technics SL-1200MK2 can a
 Up to 4 decks. Plays through the laptop's own output, or one stereo pair per deck into a
 hardware mixer (DJM-900NXS2 / DJM-900SRT or any multichannel Core Audio interface).
 
-**Status:** early but usable. Timeline with one lane per deck: drop files from Finder or the
-library, move and trim clips, set each clip's starting pitch, fader and EQ, play back through
-the laptop or a hardware mixer, save and open sets, undo. No beat detection, pitch-move editing,
-mixer automation, effects or bounce yet.
+**Status:** early but usable. Timeline with one lane per deck and 3-band waveforms: drop files
+from Finder or the library, move and trim clips, set each clip's pitch, fader and EQ, nudge by
+ear while playing, see beat lines and the key after pitch (standard or Camelot), play back
+through the laptop or a hardware mixer, save and open sets, undo. Keyboard shortcuts are
+editable (Edit > Keyboard Shortcuts). No pitch-move editing, mixer automation, effects or
+bounce yet.
 
 ## Building (macOS, Apple Silicon)
 

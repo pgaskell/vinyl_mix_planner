@@ -15,6 +15,13 @@ constexpr double kMinPixelsPerSecond = 0.02;  // ~1.5 hours across a laptop scre
 constexpr double kMaxPixelsPerSecond = 48000; // one sample per pixel
 constexpr double kMinTransitionSpan = 4.0;
 constexpr double kFineDragFactor = 0.1;
+constexpr double kMinBeatSpacingPixels = 8.0; // closer than this, beat lines are just noise
+constexpr int kBeatsInBeatZoom = 8;
+
+// CDJ-3000 style 3-band colours.
+const juce::Colour kLowColour{0xff2a6cf0};
+const juce::Colour kMidColour{0xffffa31a};
+const juce::Colour kHighColour{0xfff4f4f4};
 
 const juce::Colour kBackground{0xff1b1d21};
 const juce::Colour kLaneBackground{0xff23262b};
@@ -28,8 +35,8 @@ juce::Colour deckColour(int deck)
 }
 } // namespace
 
-TimelineView::TimelineView(SetDocument& document, AudioPool& pool, Engine& engine)
-    : document_(document), pool_(pool), engine_(engine)
+TimelineView::TimelineView(SetDocument& document, AudioPool& pool, Engine& engine, const DisplayOptions& display)
+    : document_(document), pool_(pool), engine_(engine), display_(display)
 {
     setWantsKeyboardFocus(true);
 }
@@ -244,6 +251,72 @@ void TimelineView::zoomToTransition()
     zoomToRange(centre - half, centre + half);
 }
 
+void TimelineView::zoomToBeats()
+{
+    // The selected clip if it's playing at the playhead, otherwise any clip that is.
+    const Set& set = document_.set();
+    const Clip* chosen = nullptr;
+    for (const auto& clip : set.clips)
+    {
+        auto it = timings_.find(clip.id);
+        if (it == timings_.end() || playhead_ < it->second.startSeconds() || playhead_ >= it->second.endSeconds())
+            continue;
+        if (chosen == nullptr || clip.id == selected_ || (chosen->id != selected_ && clip.deck < chosen->deck))
+            chosen = &clip;
+    }
+
+    double span = 4.0;
+    if (chosen != nullptr)
+        if (const Track* track = set.findTrack(chosen->trackId))
+            if (const auto grid = pool_.gridFor(*track))
+                span = kBeatsInBeatZoom * grid->periodSeconds() / timings_.at(chosen->id).speedAt(playhead_);
+    zoomToRange(playhead_ - span / 2.0, playhead_ + span / 2.0);
+}
+
+Id TimelineView::clipOnDeckNear(int deck, double seconds) const
+{
+    Id playing = 0, next = 0, previous = 0;
+    double nextStart = std::numeric_limits<double>::max(), previousEnd = std::numeric_limits<double>::lowest();
+    for (const auto& clip : document_.set().clips)
+    {
+        auto it = timings_.find(clip.id);
+        if (clip.deck != deck || it == timings_.end())
+            continue;
+        const double start = it->second.startSeconds(), end = it->second.endSeconds();
+        if (seconds >= start && seconds < end)
+            playing = clip.id;
+        else if (start >= seconds && start < nextStart)
+        {
+            next = clip.id;
+            nextStart = start;
+        }
+        else if (end <= seconds && end > previousEnd)
+        {
+            previous = clip.id;
+            previousEnd = end;
+        }
+    }
+    return playing != 0 ? playing : next != 0 ? next : previous;
+}
+
+std::vector<Id> TimelineView::clipsInOrder() const
+{
+    std::vector<std::pair<double, Id>> starts;
+    for (const auto& [id, timing] : timings_)
+        starts.emplace_back(timing.startSeconds(), id);
+    std::sort(starts.begin(), starts.end());
+    std::vector<Id> ids;
+    for (const auto& item : starts)
+        ids.push_back(item.second);
+    return ids;
+}
+
+const ClipTiming* TimelineView::timingOf(Id clip) const
+{
+    auto it = timings_.find(clip);
+    return it == timings_.end() ? nullptr : &it->second;
+}
+
 // --- Painting ---------------------------------------------------------------
 
 void TimelineView::paint(juce::Graphics& g)
@@ -341,8 +414,10 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
     const juce::Rectangle<int> area(left, lane.getY(), std::max(1, right - left), lane.getHeight());
 
     const auto colour = deckColour(clip.deck);
-    g.setColour(colour.darker(0.8f).withAlpha(0.9f));
+    g.setColour(juce::Colour(0xff111317));
     g.fillRect(area);
+    g.setColour(colour.withAlpha(0.35f));
+    g.fillRect(area.withHeight(18));
 
     const Track* track = document_.set().findTrack(clip.trackId);
     const auto* entry = track != nullptr ? pool_.find(track->path) : nullptr;
@@ -354,9 +429,11 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
         status = entry->error;
     else
     {
-        g.setColour(colour);
         paintWaveform(g, clip, timing, *entry->peaks, waveArea);
     }
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    if (grid)
+        paintBeats(g, clip, timing, *track, *grid, waveArea);
 
     // Pitch moves, where they start.
     g.setColour(juce::Colours::white.withAlpha(0.6f));
@@ -382,12 +459,19 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
     g.drawRect(area.toFloat(), thickness);
 
     const juce::String title = track != nullptr ? juce::String(juce::CharPointer_UTF8(track->title.c_str())) : "?";
-    const auto pitch = juce::String::formatted("%+.2f%%", pitchPercentFromSteps(clip.pitchSteps) + 0.0);
+    // Tempo and key as heard, i.e. after the pitch fader.
+    const double speed = speedFromPitchSteps(clip.pitchSteps);
+    juce::String text = title + "   " + juce::String::formatted("%+.2f%%", pitchPercentFromSteps(clip.pitchSteps) + 0.0);
+    if (grid)
+        text << "   " << juce::String(grid->bpm * speed, 2) << " BPM";
+    if (const auto key = track != nullptr ? pool_.keyFor(*track) : std::nullopt)
+        text << "   " << pitchedKeyText(*key, speed, display_.keyNotation);
+    if (status.isNotEmpty())
+        text << "   " << status;
     g.setColour(juce::Colours::white);
     g.setFont(juce::FontOptions(12.0f));
     const auto label = area.withHeight(18).withTrimmedLeft(std::max(0, kHeaderWidth - area.getX()) + 4);
-    g.drawText(title + "   " + pitch + (status.isEmpty() ? "" : "   " + status), label,
-               juce::Justification::centredLeft, true);
+    g.drawText(text, label, juce::Justification::centredLeft, true);
 }
 
 void TimelineView::paintWaveform(juce::Graphics& g, const Clip& clip, const ClipTiming& timing,
@@ -399,14 +483,52 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& clip, const Clip
     const float half = static_cast<float>(area.getHeight()) / 2.0f - 1.0f;
     const auto inFrame = static_cast<double>(clip.inFrame), outFrame = static_cast<double>(clip.outFrame);
 
+    // Low behind, mids over it, highs on top, each mirrored about the centre line.
+    auto bar = [&](float x, float level) {
+        const float h = std::max(0.5f, std::min(level, 1.0f) * half);
+        g.fillRect(x, mid - h, 1.0f, 2.0f * h);
+    };
     for (int x = from; x < to; ++x)
     {
         const double f0 = std::clamp(timing.sourceFrameAt(xToTime(x)), inFrame, outFrame);
         const double f1 = std::clamp(timing.sourceFrameAt(xToTime(x + 1)), inFrame, outFrame);
-        const auto [lo, hi] = peaks.range(static_cast<int64_t>(std::floor(f0)), static_cast<int64_t>(std::ceil(f1)));
-        const float top = mid - std::clamp(hi, -1.0f, 1.0f) * half;
-        const float bottom = mid - std::clamp(lo, -1.0f, 1.0f) * half;
-        g.fillRect(static_cast<float>(x), top, 1.0f, std::max(1.0f, bottom - top));
+        const auto bands = peaks.range(static_cast<int64_t>(std::floor(f0)), static_cast<int64_t>(std::ceil(f1)));
+        const auto fx = static_cast<float>(x);
+        g.setColour(kLowColour);
+        bar(fx, bands.low);
+        g.setColour(kMidColour);
+        bar(fx, bands.mid);
+        g.setColour(kHighColour);
+        bar(fx, bands.high);
+    }
+}
+
+void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, const Track& track,
+                              const BeatGrid& grid, juce::Rectangle<int> area)
+{
+    const double left = std::max(xToTime(std::max(area.getX(), kHeaderWidth)), timing.startSeconds());
+    const double right = std::min(xToTime(std::min(area.getRight(), getWidth())), timing.endSeconds());
+    if (right <= left)
+        return;
+
+    // Only once beats are far enough apart to judge phase by eye.
+    const double period = grid.periodSeconds();
+    if (period / timing.speedAt((left + right) / 2.0) * pixelsPerSecond_ < kMinBeatSpacingPixels)
+        return;
+
+    const double firstSource = timing.sourceFrameAt(left) / track.sampleRate;
+    const double lastSource = timing.sourceFrameAt(right) / track.sampleRate;
+    const auto firstBeat = static_cast<int64_t>(std::ceil((firstSource - grid.firstBeatSeconds) / period));
+    const auto lastBeat = static_cast<int64_t>(std::floor((lastSource - grid.firstBeatSeconds) / period));
+    for (int64_t k = firstBeat; k <= lastBeat; ++k)
+    {
+        const double frame = (grid.firstBeatSeconds + static_cast<double>(k) * period) * track.sampleRate;
+        if (frame < static_cast<double>(clip.inFrame) || frame > static_cast<double>(clip.outFrame))
+            continue;
+        const auto x = static_cast<float>(timeToX(timing.timelineSecondsAt(frame)));
+        const bool downbeat = ((k % 4) + 4) % 4 == 0;
+        g.setColour(downbeat ? juce::Colours::red.withAlpha(0.9f) : juce::Colours::white.withAlpha(0.45f));
+        g.drawLine(x, static_cast<float>(area.getY()), x, static_cast<float>(area.getBottom()), downbeat ? 2.0f : 1.0f);
     }
 }
 

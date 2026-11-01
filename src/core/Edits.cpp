@@ -136,18 +136,28 @@ bool trimClipEnd(Set& set, Id clipId, double newEndSeconds)
     return true;
 }
 
-bool setClipPitch(Set& set, Id clipId, int pitchSteps)
+bool setClipPitch(Set& set, Id clipId, int pitchSteps, std::optional<double> pivotSeconds)
 {
     Clip* clip = findClip(set, clipId);
     const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
     if (track == nullptr)
         return false;
+    const auto before = timingFor(*clip, *track);
+    if (!before)
+        return false;
 
     Clip changed = *clip;
     changed.pitchSteps = clampPitchSteps(pitchSteps);
     // A slower start can make an existing ramp run into the next move.
-    if (!timingFor(changed, *track))
+    const auto after = timingFor(changed, *track);
+    if (!after)
         return false;
+
+    if (pivotSeconds && *pivotSeconds > before->startSeconds() && *pivotSeconds < before->endSeconds())
+    {
+        const double frame = before->sourceFrameAt(*pivotSeconds);
+        changed.startSeconds += *pivotSeconds - after->timelineSecondsAt(frame);
+    }
     *clip = changed;
     return true;
 }
@@ -158,6 +168,30 @@ bool setClipMixer(Set& set, Id clipId, const ChannelSettings& settings)
     if (clip == nullptr)
         return false;
     clip->mixer = {clamp01(settings.fader), clamp01(settings.high), clamp01(settings.mid), clamp01(settings.low)};
+    return true;
+}
+
+bool setTrackGrid(Set& set, Id trackId, std::optional<BeatGrid> grid)
+{
+    auto it = std::find_if(set.tracks.begin(), set.tracks.end(), [trackId](const Track& t) { return t.id == trackId; });
+    if (it == set.tracks.end())
+        return false;
+    if (grid && (!std::isfinite(grid->bpm) || grid->bpm < 20.0 || grid->bpm > 400.0 ||
+                 !std::isfinite(grid->firstBeatSeconds)))
+        return false;
+    if (grid) // keep the stored offset small: any beat of the grid will do
+        grid->firstBeatSeconds -= std::floor(grid->firstBeatSeconds / (4.0 * grid->periodSeconds())) *
+                                  4.0 * grid->periodSeconds();
+    it->grid = grid;
+    return true;
+}
+
+bool setTrackKey(Set& set, Id trackId, std::optional<MusicalKey> key)
+{
+    auto it = std::find_if(set.tracks.begin(), set.tracks.end(), [trackId](const Track& t) { return t.id == trackId; });
+    if (it == set.tracks.end())
+        return false;
+    it->key = key;
     return true;
 }
 

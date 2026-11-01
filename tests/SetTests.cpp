@@ -22,8 +22,8 @@ Set makeSet()
 {
     Set set;
     set.name = "Test";
-    set.tracks.push_back({1, "/music/a.flac", "Track A", frames(360.0), kRate, PressedSpeed::Unknown});
-    set.tracks.push_back({2, "/music/b.flac", "Track B", frames(360.0), kRate, PressedSpeed::Rpm33});
+    set.tracks.push_back({1, "/music/a.flac", "Track A", frames(360.0), kRate, PressedSpeed::Unknown, {}, {}});
+    set.tracks.push_back({2, "/music/b.flac", "Track B", frames(360.0), kRate, PressedSpeed::Rpm33, {}, {}});
     set.nextId = 3;
     return set;
 }

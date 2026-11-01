@@ -25,8 +25,9 @@ public:
     void prepare(double deviceSampleRate, int maxBlockFrames);
 
     // Plays source frames [startFrame, endFrame) of the track into numFrames output frames.
-    // A call that continues where the last one ended keeps the resampler running; anything else
-    // (another track, a jump) restarts it at startFrame.
+    // If startFrame is close to where the deck actually is, it slews: it plays slightly faster
+    // or slower until it catches up, like nudging a platter, so small edits during playback
+    // (nudges, pitch changes) don't click. Anything further away, or another track, jumps.
     void render(const TrackAudio* track, double startFrame, double endFrame, float* left, float* right,
                 int numFrames);
 
@@ -38,7 +39,7 @@ private:
     SRC_STATE* src_ = nullptr;
     const TrackAudio* track_ = nullptr;
     int64_t readFrame_ = 0;     // next frame to feed the resampler
-    double expectedStart_ = -1; // where a continuing call would start
+    double position_ = -1;      // source frame the deck has actually reached
     std::vector<float> scratch_; // interleaved resampler output
 };
 

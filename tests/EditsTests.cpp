@@ -4,6 +4,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+
 using namespace vmp;
 using Catch::Approx;
 
@@ -19,7 +21,7 @@ int64_t frames(double seconds)
 Set makeSet()
 {
     Set set;
-    edit::addTrack(set, {0, "/music/a.flac", "A", frames(300.0), kRate, PressedSpeed::Unknown});
+    edit::addTrack(set, {0, "/music/a.flac", "A", frames(300.0), kRate, PressedSpeed::Unknown, {}, {}});
     return set;
 }
 
@@ -33,7 +35,7 @@ const Clip& onlyClip(const Set& set)
 TEST_CASE("Adding the same file twice reuses the track")
 {
     auto set = makeSet();
-    const Id again = edit::addTrack(set, {0, "/music/a.flac", "A", frames(300.0), kRate, PressedSpeed::Unknown});
+    const Id again = edit::addTrack(set, {0, "/music/a.flac", "A", frames(300.0), kRate, PressedSpeed::Unknown, {}, {}});
     CHECK(again == set.tracks.front().id);
     CHECK(set.tracks.size() == 1);
 }
@@ -183,4 +185,37 @@ TEST_CASE("Saving marks the current state clean, and undoing past it is dirty ag
     CHECK(doc.isDirty());
     doc.redo();
     CHECK_FALSE(doc.isDirty());
+}
+
+TEST_CASE("Changing pitch with a pivot keeps the music under the playhead in place")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 100.0);
+
+    // 60 s into the clip the record is at 60 s. At +4% it must still be there at 160 s.
+    REQUIRE(edit::setClipPitch(set, id, 80, 160.0));
+    const auto& clip = onlyClip(set);
+    CHECK(clip.startSeconds == Approx(160.0 - 60.0 / 1.04));
+    const ClipTiming timing(clip, *set.findTrack(clip.trackId));
+    CHECK(timing.sourceFrameAt(160.0) == Approx(60.0 * kRate));
+
+    // Outside the clip the needle drop stays put.
+    REQUIRE(edit::setClipPitch(set, id, 0, 5.0));
+    CHECK(onlyClip(set).startSeconds == Approx(160.0 - 60.0 / 1.04));
+}
+
+TEST_CASE("Grid and key corrections are stored on the track and can be cleared")
+{
+    auto set = makeSet();
+    const Id track = set.tracks.front().id;
+    REQUIRE(edit::setTrackGrid(set, track, BeatGrid{124.0, 10.0}));
+    // Stored as the equivalent downbeat within the first bar.
+    const double bar = 4.0 * 60.0 / 124.0;
+    CHECK(set.tracks.front().grid->firstBeatSeconds == Approx(10.0 - std::floor(10.0 / bar) * bar));
+    CHECK_FALSE(edit::setTrackGrid(set, track, BeatGrid{0.0, 0.0}));
+    REQUIRE(edit::setTrackGrid(set, track, std::nullopt));
+    CHECK_FALSE(set.tracks.front().grid);
+
+    REQUIRE(edit::setTrackKey(set, track, MusicalKey{9, true}));
+    CHECK(set.tracks.front().key == MusicalKey{9, true});
 }

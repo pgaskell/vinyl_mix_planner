@@ -45,12 +45,19 @@ std::string setToJson(const Set& set)
 {
     json tracks = json::array();
     for (const auto& t : set.tracks)
-        tracks.push_back({{"id", t.id},
-                          {"path", t.path},
-                          {"title", t.title},
-                          {"frames", t.frames},
-                          {"sampleRate", t.sampleRate},
-                          {"pressed", pressedToString(t.pressed)}});
+    {
+        json track = {{"id", t.id},
+                      {"path", t.path},
+                      {"title", t.title},
+                      {"frames", t.frames},
+                      {"sampleRate", t.sampleRate},
+                      {"pressed", pressedToString(t.pressed)}};
+        if (t.grid)
+            track["grid"] = {{"bpm", t.grid->bpm}, {"firstBeat", t.grid->firstBeatSeconds}};
+        if (t.key)
+            track["key"] = t.key->name();
+        tracks.push_back(track);
+    }
 
     json clips = json::array();
     for (const auto& c : set.clips)
@@ -116,6 +123,16 @@ Set setFromJson(const std::string& text)
             track.frames = t.at("frames").get<int64_t>();
             track.sampleRate = t.at("sampleRate").get<double>();
             track.pressed = pressedFromString(t.at("pressed").get<std::string>());
+            if (t.contains("grid"))
+                track.grid = BeatGrid{t["grid"].at("bpm").get<double>(), t["grid"].at("firstBeat").get<double>()};
+            if (t.contains("key"))
+            {
+                track.key = MusicalKey::parse(t["key"].get<std::string>());
+                if (!track.key)
+                    throw SetFileError("unknown key '" + t["key"].get<std::string>() + "'");
+            }
+            if (track.grid && !(track.grid->bpm > 0.0))
+                throw SetFileError("track " + std::to_string(track.id) + " has an invalid BPM");
             if (track.sampleRate <= 0.0)
                 throw SetFileError("track " + std::to_string(track.id) + " has an invalid sample rate");
             set.tracks.push_back(std::move(track));

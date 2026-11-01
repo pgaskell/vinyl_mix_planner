@@ -12,8 +12,11 @@ namespace vmp
 namespace
 {
 constexpr double kMaxSrcRatio = 256.0; // libsamplerate's limit in both directions
-// A call starting further than this from where the last one ended is a jump, not a continuation.
-constexpr double kJumpToleranceFrames = 2.0;
+// Requests within this distance of the deck's position are reached by slewing; beyond, it jumps.
+constexpr double kSlewWindowSeconds = 0.1;
+// How much faster or slower than requested the deck may play while catching up. 10% closes a
+// 10 ms gap in about 100 ms and sounds like a nudge on the platter.
+constexpr double kMaxSlew = 0.1;
 } // namespace
 
 Deck::Deck()
@@ -33,7 +36,7 @@ void Deck::prepare(double, int maxBlockFrames)
 {
     scratch_.assign(static_cast<size_t>(std::max(maxBlockFrames, 1)) * 2, 0.0f);
     track_ = nullptr;
-    expectedStart_ = -1.0;
+    position_ = -1.0;
 }
 
 void Deck::restart(const TrackAudio* track, double startFrame)
@@ -41,6 +44,7 @@ void Deck::restart(const TrackAudio* track, double startFrame)
     src_reset(src_);
     track_ = track;
     readFrame_ = std::clamp<int64_t>(static_cast<int64_t>(std::floor(startFrame)), 0, track->frames);
+    position_ = startFrame;
 }
 
 void Deck::renderSilence(float* left, float* right, int numFrames)
@@ -48,7 +52,7 @@ void Deck::renderSilence(float* left, float* right, int numFrames)
     std::fill_n(left, numFrames, 0.0f);
     std::fill_n(right, numFrames, 0.0f);
     track_ = nullptr;
-    expectedStart_ = -1.0;
+    position_ = -1.0;
 }
 
 void Deck::render(const TrackAudio* track, double startFrame, double endFrame, float* left, float* right,
@@ -61,13 +65,17 @@ void Deck::render(const TrackAudio* track, double startFrame, double endFrame, f
         return;
     }
 
-    if (track != track_ || std::abs(startFrame - expectedStart_) > kJumpToleranceFrames)
+    if (track != track_ || std::abs(startFrame - position_) > kSlewWindowSeconds * track->sampleRate)
         restart(track, startFrame);
-    expectedStart_ = endFrame;
+
+    // Head for endFrame from where the deck really is, within the slew limit.
+    const double requested = endFrame - startFrame;
+    const double consumed = std::clamp(endFrame - position_, requested * (1.0 - kMaxSlew), requested * (1.0 + kMaxSlew));
+    position_ += consumed;
 
     // Output frames per input frame. The resampler ramps linearly from the previous block's
     // ratio, which follows pitch ramps smoothly.
-    const double ratio = std::clamp(numFrames / (endFrame - startFrame), 1.0 / kMaxSrcRatio, kMaxSrcRatio);
+    const double ratio = std::clamp(numFrames / consumed, 1.0 / kMaxSrcRatio, kMaxSrcRatio);
 
     int produced = 0;
     while (produced < numFrames && readFrame_ < track->frames)

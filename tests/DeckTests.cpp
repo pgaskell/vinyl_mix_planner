@@ -83,3 +83,32 @@ TEST_CASE("Playing past the end of the track gives silence")
     play(deck, *track, position, 1.0, 48000.0, 24000 + 2048);
     CHECK(peak(play(deck, *track, position, 1.0, 48000.0, 4800)) == 0.0f);
 }
+
+TEST_CASE("A small slip is reached smoothly, a large one jumps")
+{
+    // A click 1 s into the record.
+    auto track = makeTrack(48000.0, 4.0);
+    track->interleaved[48000 * 2] = track->interleaved[48000 * 2 + 1] = 1.0f;
+
+    auto clickHeardAt = [&](double slipSeconds) {
+        Deck deck;
+        deck.prepare(48000.0, kBlock);
+        std::vector<float> left(96000), right(96000);
+        double position = 0.0;
+        for (int done = 0; done < 96000; done += kBlock)
+        {
+            if (done == 47 * kBlock) // after about 0.5 s, ask for the record to be further on
+                position += slipSeconds * 48000.0;
+            deck.render(track.get(), position, position + kBlock, left.data() + done, right.data() + done, kBlock);
+            position += kBlock;
+        }
+        const auto loudest = std::max_element(left.begin(), left.end(),
+                                              [](float a, float b) { return std::abs(a) < std::abs(b); });
+        return static_cast<double>(loudest - left.begin()) / 48000.0;
+    };
+
+    CHECK(clickHeardAt(0.0) == Approx(1.0).margin(0.002));
+    CHECK(clickHeardAt(0.010) == Approx(0.990).margin(0.002)); // slewed: caught up within ~0.1 s
+    CHECK(clickHeardAt(-0.010) == Approx(1.010).margin(0.002));
+    CHECK(clickHeardAt(0.300) == Approx(0.700).margin(0.002)); // jumped
+}

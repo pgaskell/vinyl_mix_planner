@@ -62,6 +62,14 @@ DJM-900NXS2, and generic Core Audio devices).
   wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.
 - Mixer settings are stored as knob/fader positions (0..1), never gains: the mixer model maps them.
 - Known limitation: all track audio is decoded into memory (float). Long sets need disk streaming.
+- Analysis (`core/Analysis`): BPM/beat grid from spectral flux (tempo from full band, beat phase from
+  <200 Hz), key from chroma vs Krumhansl-Kessler profiles. Results cached per file in
+  `~/Library/Application Support/VinylMixPlanner/analysis.json`; bump `kAnalyserVersion` when the
+  detectors change. The DJ's corrections live on `Track` in the set and override the cache.
+  The onset timing constant was calibrated on synthetic kicks only.
+- Deck slews to small position changes (<100 ms, +/-10% speed) instead of jumping, so live nudges and
+  pitch changes (which pivot on the playhead) sound like a real platter.
+- `Command` ids (app/Commands.h) are stored in saved key mappings: append, never renumber.
 - Drivers only pass enabled channels: always route through the physical->buffer map.
 
 ## Building on this machine

@@ -31,8 +31,10 @@ set(VMP_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor)
 # --- Core: set model, timing math, file format; no JUCE dependency ----------
 
 add_library(vmp_core STATIC
+    src/core/Analysis.cpp
     src/core/Document.cpp
     src/core/Edits.cpp
+    src/core/Musical.cpp
     src/core/PitchCurve.cpp
     src/core/Set.cpp
     src/core/SetFile.cpp
@@ -40,6 +42,8 @@ add_library(vmp_core STATIC
 target_include_directories(vmp_core PUBLIC src)
 target_link_libraries(vmp_core PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(vmp_core PRIVATE ${VMP_WARNINGS})
+# Track analysis is heavy number crunching; keep it fast in debug builds too.
+set_source_files_properties(src/core/Analysis.cpp src/core/Waveform.cpp PROPERTIES COMPILE_OPTIONS -O2)
 
 # --- Engine: real-time audio, no JUCE dependency ----------------------------
 
@@ -61,6 +65,7 @@ juce_add_gui_app(VinylMixPlanner
     NEEDS_CURL FALSE)
 
 target_sources(VinylMixPlanner PRIVATE
+    src/app/AnalysisCache.cpp
     src/app/AudioPool.cpp
     src/app/Inspector.cpp
     src/app/IssuesPanel.cpp
@@ -96,11 +101,13 @@ if(VMP_BUILD_TESTS)
     include(Catch)
 
     add_executable(vmp_tests
+        tests/AnalysisTests.cpp
         tests/DeckTests.cpp
         tests/EditsTests.cpp
         tests/EngineTests.cpp
         tests/MixerChannelTests.cpp
         tests/MotorTests.cpp
+        tests/MusicalTests.cpp
         tests/PitchCurveTests.cpp
         tests/PitchTests.cpp
         tests/SetFileTests.cpp

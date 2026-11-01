@@ -1,5 +1,6 @@
 #include "app/MainComponent.h"
 
+#include "app/Commands.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
 #include "core/SetFile.h"
@@ -9,32 +10,6 @@ namespace vmp
 
 namespace
 {
-enum Command : juce::CommandID
-{
-    kNew = 1,
-    kOpen,
-    kSave,
-    kSaveAs,
-    kUndo,
-    kRedo,
-    kDelete,
-    kPlayPause,
-    kGoToStart,
-    kZoomIn,
-    kZoomOut,
-    kZoomSet,
-    kZoomClip,
-    kZoomTransition,
-    kToggleFollow,
-    kNudgeEarlier,
-    kNudgeLater,
-    kNudgeEarlierFine,
-    kNudgeLaterFine,
-    kPitchUp,
-    kPitchDown,
-    kAudioSettings,
-};
-
 // Menu item ids outside the command range.
 constexpr int kMenuModeInternal = 1001;
 constexpr int kMenuModeDirect = 1002;
@@ -45,16 +20,31 @@ constexpr int kMenuNone = 99;
 
 constexpr double kNudgeSeconds = 0.010;
 constexpr double kFineNudgeSeconds = 0.001;
+constexpr int kCoarsePitchSteps = 10; // 0.5%
+constexpr double kGridShiftSeconds = 0.002;
+constexpr double kGridBpmStep = 0.01;
+constexpr double kJumpSeconds = 4.0;
 constexpr int kMidiLogLines = 300;
 const juce::Colour kBackground{0xff1b1d21};
 } // namespace
 
 MainComponent::MainComponent(juce::PropertiesFile& settings)
-    : settings_(settings), timeline_(document_, pool_, engine_), inspector_(document_), library_(pool_, settings)
+    : settings_(settings),
+      analysisCache_(settings.getFile().getSiblingFile("analysis.json")),
+      pool_(analysisCache_),
+      timeline_(document_, pool_, engine_, display_),
+      inspector_(document_, pool_, display_, commands_, [this] { return engine_.playheadSeconds(); }),
+      library_(pool_, settings)
 {
-    // --- Commands, menus and shortcuts ---
+    display_.keyNotation = static_cast<KeyNotation>(std::clamp(settings_.getIntValue("keyNotation", 2), 0, 2));
+
+    // --- Commands, menus and shortcuts (user changes to the shortcuts are kept in settings) ---
     commands_.registerAllCommandsForTarget(this);
     commands_.setFirstCommandTarget(this);
+    if (const auto mappings = settings_.getXmlValue("keyMappings"))
+        commands_.getKeyMappings()->restoreFromXml(*mappings);
+    commands_.getKeyMappings()->addChangeListener(this);
+    inspector_.refreshShortcuts();
     addKeyListener(commands_.getKeyMappings());
     setApplicationCommandManagerToWatch(&commands_);
 #if JUCE_MAC
@@ -73,7 +63,10 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
 
     addAndMakeVisible(inspector_);
     addAndMakeVisible(library_);
-    library_.onFileDoubleClicked = [this](const juce::File& file) { addFileAtPlayhead(file); };
+    library_.onFileDoubleClicked = [this](const juce::File& file) {
+        addFileAtPlayhead(file);
+        timeline_.grabKeyboardFocus();
+    };
 
     issues_.onIssueClicked = [this](Id clip) {
         timeline_.setSelectedClip(clip);
@@ -100,6 +93,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     commandButton(zoomSetButton_, kZoomSet, "Zoom to the whole mix (shift Z)");
     commandButton(zoomClipButton_, kZoomClip, "Zoom to the selected clip (Z)");
     commandButton(zoomTransitionButton_, kZoomTransition, "Zoom to the mix into the selected clip (T)");
+    commandButton(zoomBeatsButton_, kZoomBeats, "Zoom in on the beats at the playhead (B)");
     commandButton(followButton_, kToggleFollow, "Keep the playhead in view while playing (F)");
     commandButton(settingsButton_, kAudioSettings, "Audio and MIDI device settings");
     followButton_.setToggleState(true, juce::dontSendNotification);
@@ -152,6 +146,10 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     timeline_.zoomToSet();
 
     startTimerHz(30);
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer(&timeline_)] {
+        if (safe != nullptr)
+            safe->grabKeyboardFocus();
+    });
 }
 
 MainComponent::~MainComponent()
@@ -160,6 +158,7 @@ MainComponent::~MainComponent()
     juce::MenuBarModel::setMacMainMenu(nullptr);
 #endif
     saveRouting();
+    commands_.getKeyMappings()->removeChangeListener(this);
     pool_.removeChangeListener(this);
     deviceManager_.removeChangeListener(this);
     deviceManager_.removeMidiInputDeviceCallback({}, this);
@@ -212,7 +211,15 @@ void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source)
     if (source == &pool_)
     {
         timeline_.refresh();
+        inspector_.refresh();
         rebuildSchedule();
+        return;
+    }
+    if (source == commands_.getKeyMappings())
+    {
+        if (const auto xml = commands_.getKeyMappings()->createXml(true))
+            settings_.setValue("keyMappings", xml.get());
+        inspector_.refreshShortcuts();
         return;
     }
 
@@ -341,25 +348,101 @@ void MainComponent::addFileAtPlayhead(const juce::File& file)
     addFile(file, selected != nullptr ? selected->deck : 0, engine_.playheadSeconds());
 }
 
+MainComponent::Selection MainComponent::selection() const
+{
+    Selection sel;
+    sel.clip = document_.set().findClip(timeline_.selectedClip());
+    sel.track = sel.clip != nullptr ? document_.set().findTrack(sel.clip->trackId) : nullptr;
+    sel.timing = sel.track != nullptr ? timeline_.timingOf(sel.clip->id) : nullptr;
+    return sel;
+}
+
+void MainComponent::select(Id clip)
+{
+    if (clip == 0)
+        return;
+    timeline_.setSelectedClip(clip);
+    inspector_.setClip(clip);
+}
+
 void MainComponent::nudgeSelected(double seconds)
 {
-    const Clip* clip = document_.set().findClip(timeline_.selectedClip());
-    if (clip == nullptr)
+    const auto sel = selection();
+    if (!sel)
         return;
-    const Id id = clip->id;
-    const double start = clip->startSeconds + seconds;
-    const int deck = clip->deck;
+    const Id id = sel.clip->id;
+    const double start = sel.clip->startSeconds + seconds;
+    const int deck = sel.clip->deck;
     document_.edit([&](Set& s) { return edit::moveClip(s, id, start, deck); });
 }
 
-void MainComponent::changeSelectedPitch(int steps)
+void MainComponent::nudgeSelectedByBeats(int beats)
 {
-    const Clip* clip = document_.set().findClip(timeline_.selectedClip());
-    if (clip == nullptr)
+    const auto sel = selection();
+    const auto grid = sel ? pool_.gridFor(*sel.track) : std::nullopt;
+    if (!grid)
         return;
-    const Id id = clip->id;
-    const int pitch = clip->pitchSteps + steps;
-    document_.edit([&](Set& s) { return edit::setClipPitch(s, id, pitch); });
+    // A beat as heard at the playhead (or the clip start if the playhead is elsewhere).
+    const double at = std::clamp(engine_.playheadSeconds(), sel.timing->startSeconds(), sel.timing->endSeconds());
+    nudgeSelected(beats * grid->periodSeconds() / sel.timing->speedAt(at));
+}
+
+void MainComponent::changeSelectedPitch(int steps, bool absolute)
+{
+    const auto sel = selection();
+    if (!sel)
+        return;
+    const Id id = sel.clip->id;
+    const int pitch = absolute ? steps : sel.clip->pitchSteps + steps;
+    const double pivot = engine_.playheadSeconds();
+    document_.edit([&](Set& s) { return edit::setClipPitch(s, id, pitch, pivot); });
+}
+
+void MainComponent::editSelectedGrid(
+    const std::function<std::optional<BeatGrid>(const BeatGrid&, std::optional<double>)>& change)
+{
+    const auto sel = selection();
+    if (!sel)
+        return;
+    const auto grid = pool_.gridFor(*sel.track);
+    if (!grid)
+    {
+        showError("No beat grid", "No steady beat was found in this track. Type its BPM in the inspector first.");
+        return;
+    }
+    const double playhead = engine_.playheadSeconds();
+    std::optional<double> sourceAtPlayhead;
+    if (playhead >= sel.timing->startSeconds() && playhead < sel.timing->endSeconds())
+        sourceAtPlayhead = sel.timing->sourceFrameAt(playhead) / sel.track->sampleRate;
+
+    const auto updated = change(*grid, sourceAtPlayhead);
+    const Id trackId = sel.track->id;
+    document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
+}
+
+namespace
+{
+// A new tempo for the grid that keeps the beat nearest `pivot` (source seconds) where it is.
+BeatGrid retempo(const BeatGrid& grid, double bpm, std::optional<double> pivot)
+{
+    const double period = grid.periodSeconds();
+    const double anchor = pivot ? *pivot : grid.firstBeatSeconds;
+    const double k = std::round((anchor - grid.firstBeatSeconds) / period);
+    const double beat = grid.firstBeatSeconds + k * period;
+    return {bpm, beat - k * 60.0 / bpm};
+}
+} // namespace
+
+void MainComponent::showKeyboardShortcuts()
+{
+    auto* editor = new juce::KeyMappingEditorComponent(*commands_.getKeyMappings(), true);
+    editor->setSize(520, 640);
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(editor);
+    options.dialogTitle = "Keyboard shortcuts";
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.launchAsync();
 }
 
 // --- Files ------------------------------------------------------------------
@@ -525,120 +608,218 @@ void MainComponent::saveRouting()
 
 void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
 {
-    for (juce::CommandID id = kNew; id <= kAudioSettings; ++id)
+    for (juce::CommandID id = kNew; id <= kLastCommand; ++id)
         commands.add(id);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo& info)
 {
     using juce::KeyPress;
-    using juce::ModifierKeys;
-    const auto cmd = ModifierKeys::commandModifier;
-    const auto shift = ModifierKeys::shiftModifier;
-    const bool hasClip = document_.set().findClip(timeline_.selectedClip()) != nullptr;
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    const auto shift = juce::ModifierKeys::shiftModifier;
+    const auto alt = juce::ModifierKeys::altModifier;
+    const bool hasClip = static_cast<bool>(selection());
+
+    auto define = [&](const char* name, const char* description, const char* category, bool active = true) {
+        info.setInfo(name, description, category, 0);
+        info.setActive(active);
+    };
+    auto key = [&](int code, juce::ModifierKeys mods = {}) { info.addDefaultKeypress(code, mods); };
 
     switch (id)
     {
     case kNew:
-        info.setInfo("New Set", "Start a new set", "File", 0);
-        info.addDefaultKeypress('n', cmd);
+        define("New Set", "Start a new set", "File");
+        key('n', cmd);
         break;
     case kOpen:
-        info.setInfo("Open...", "Open a set", "File", 0);
-        info.addDefaultKeypress('o', cmd);
+        define("Open...", "Open a set", "File");
+        key('o', cmd);
         break;
     case kSave:
-        info.setInfo("Save", "Save the set", "File", 0);
-        info.addDefaultKeypress('s', cmd);
+        define("Save", "Save the set", "File");
+        key('s', cmd);
         break;
     case kSaveAs:
-        info.setInfo("Save As...", "Save the set to a new file", "File", 0);
-        info.addDefaultKeypress('s', cmd | shift);
+        define("Save As...", "Save the set to a new file", "File");
+        key('s', cmd | shift);
         break;
     case kUndo:
-        info.setInfo("Undo", "Undo the last change", "Edit", 0);
-        info.addDefaultKeypress('z', cmd);
-        info.setActive(document_.canUndo());
+        define("Undo", "Undo the last change", "Edit", document_.canUndo());
+        key('z', cmd);
         break;
     case kRedo:
-        info.setInfo("Redo", "Redo the last undone change", "Edit", 0);
-        info.addDefaultKeypress('z', cmd | shift);
-        info.setActive(document_.canRedo());
+        define("Redo", "Redo the last undone change", "Edit", document_.canRedo());
+        key('z', cmd | shift);
         break;
     case kDelete:
-        info.setInfo("Delete Clip", "Remove the selected clip", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::backspaceKey, 0);
-        info.addDefaultKeypress(KeyPress::deleteKey, 0);
-        info.setActive(hasClip);
+        define("Delete Clip", "Remove the selected clip", "Edit", hasClip);
+        key(KeyPress::backspaceKey);
+        key(KeyPress::deleteKey);
+        break;
+    case kKeyboardShortcuts:
+        define("Keyboard Shortcuts...", "Change the keyboard shortcuts", "Edit");
+        key('k', cmd);
+        break;
+
+    case kSelectDeck1:
+    case kSelectDeck2:
+    case kSelectDeck3:
+    case kSelectDeck4:
+    {
+        const int deck = static_cast<int>(id - kSelectDeck1);
+        static const char* const names[] = {"Select Deck 1", "Select Deck 2", "Select Deck 3", "Select Deck 4"};
+        define(names[deck], "Select the record on this deck at the playhead", "Clip",
+               deck < document_.set().numDecks);
+        key('1' + deck);
+        break;
+    }
+    case kSelectNextClip:
+        define("Select Next Clip", "Select the next clip in time", "Clip");
+        key(KeyPress::tabKey);
+        break;
+    case kSelectPreviousClip:
+        define("Select Previous Clip", "Select the previous clip in time", "Clip");
+        key(KeyPress::tabKey, shift);
         break;
     case kNudgeEarlier:
-        info.setInfo("Nudge Earlier", "Move the selected clip 10 ms earlier", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::leftKey, 0);
-        info.setActive(hasClip);
+        define("Nudge Earlier", "Slip the selected record 10 ms earlier", "Clip", hasClip);
+        key(KeyPress::leftKey);
         break;
     case kNudgeLater:
-        info.setInfo("Nudge Later", "Move the selected clip 10 ms later", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::rightKey, 0);
-        info.setActive(hasClip);
+        define("Nudge Later", "Slip the selected record 10 ms later", "Clip", hasClip);
+        key(KeyPress::rightKey);
         break;
     case kNudgeEarlierFine:
-        info.setInfo("Nudge Earlier (Fine)", "Move the selected clip 1 ms earlier", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::leftKey, shift);
-        info.setActive(hasClip);
+        define("Nudge Earlier (Fine)", "Slip the selected record 1 ms earlier", "Clip", hasClip);
+        key(KeyPress::leftKey, shift);
         break;
     case kNudgeLaterFine:
-        info.setInfo("Nudge Later (Fine)", "Move the selected clip 1 ms later", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::rightKey, shift);
-        info.setActive(hasClip);
+        define("Nudge Later (Fine)", "Slip the selected record 1 ms later", "Clip", hasClip);
+        key(KeyPress::rightKey, shift);
+        break;
+    case kNudgeBeatEarlier:
+        define("Nudge One Beat Earlier", "Slip the selected record one beat earlier", "Clip", hasClip);
+        key(KeyPress::leftKey, alt);
+        break;
+    case kNudgeBeatLater:
+        define("Nudge One Beat Later", "Slip the selected record one beat later", "Clip", hasClip);
+        key(KeyPress::rightKey, alt);
         break;
     case kPitchUp:
-        info.setInfo("Pitch +0.05%", "Speed up the selected clip by one step", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::upKey, 0);
-        info.setActive(hasClip);
+        define("Pitch +0.05%", "Speed up the selected record by one step", "Clip", hasClip);
+        key(KeyPress::upKey);
         break;
     case kPitchDown:
-        info.setInfo("Pitch -0.05%", "Slow down the selected clip by one step", "Edit", 0);
-        info.addDefaultKeypress(KeyPress::downKey, 0);
-        info.setActive(hasClip);
+        define("Pitch -0.05%", "Slow down the selected record by one step", "Clip", hasClip);
+        key(KeyPress::downKey);
         break;
+    case kPitchUpCoarse:
+        define("Pitch +0.5%", "Speed up the selected record by ten steps", "Clip", hasClip);
+        key(KeyPress::upKey, shift);
+        break;
+    case kPitchDownCoarse:
+        define("Pitch -0.5%", "Slow down the selected record by ten steps", "Clip", hasClip);
+        key(KeyPress::downKey, shift);
+        break;
+    case kPitchReset:
+        define("Pitch to 0", "Pitch fader to the centre (quartz lock)", "Clip", hasClip);
+        key('0');
+        break;
+    case kTrimStartToPlayhead:
+        define("Trim Start to Playhead", "Start the selected clip at the playhead", "Clip", hasClip);
+        key('i');
+        break;
+    case kTrimEndToPlayhead:
+        define("Trim End to Playhead", "End the selected clip at the playhead", "Clip", hasClip);
+        key('o');
+        break;
+
+    case kGridDownbeatHere:
+        define("Downbeat at Playhead", "Put a bar line of the selected track's grid at the playhead", "Grid", hasClip);
+        key('g');
+        break;
+    case kGridEarlier:
+        define("Grid Earlier", "Move the selected track's beat grid 2 ms earlier", "Grid", hasClip);
+        key('[');
+        break;
+    case kGridLater:
+        define("Grid Later", "Move the selected track's beat grid 2 ms later", "Grid", hasClip);
+        key(']');
+        break;
+    case kGridHalve:
+        define("Halve BPM", "Halve the selected track's BPM", "Grid", hasClip);
+        break;
+    case kGridDouble:
+        define("Double BPM", "Double the selected track's BPM", "Grid", hasClip);
+        break;
+    case kGridSlower:
+        define("Grid BPM -0.01", "Slow the selected track's grid by 0.01 BPM", "Grid", hasClip);
+        key('[', shift);
+        break;
+    case kGridFaster:
+        define("Grid BPM +0.01", "Speed up the selected track's grid by 0.01 BPM", "Grid", hasClip);
+        key(']', shift);
+        break;
+    case kGridReset:
+        define("Reset Grid", "Go back to the detected tempo and grid", "Grid", hasClip);
+        break;
+
     case kPlayPause:
-        info.setInfo("Play / Pause", "Start or stop playback", "Transport", 0);
-        info.addDefaultKeypress(KeyPress::spaceKey, 0);
+        define("Play / Pause", "Start or stop playback", "Transport");
+        key(KeyPress::spaceKey);
         break;
     case kGoToStart:
-        info.setInfo("Go to Start", "Move the playhead to the start", "Transport", 0);
-        info.addDefaultKeypress(KeyPress::homeKey, 0);
-        info.addDefaultKeypress(KeyPress::returnKey, 0);
+        define("Go to Start", "Move the playhead to the start", "Transport");
+        key(KeyPress::homeKey);
+        key(KeyPress::returnKey);
         break;
+    case kJumpBack:
+        define("Jump Back", "Move the playhead back 4 seconds", "Transport");
+        key(',');
+        break;
+    case kJumpForward:
+        define("Jump Forward", "Move the playhead forward 4 seconds", "Transport");
+        key('.');
+        break;
+
     case kZoomIn:
-        info.setInfo("Zoom In", "Zoom in around the playhead", "View", 0);
-        info.addDefaultKeypress('=', cmd);
+        define("Zoom In", "Zoom in around the playhead", "View");
+        key('=', cmd);
         break;
     case kZoomOut:
-        info.setInfo("Zoom Out", "Zoom out", "View", 0);
-        info.addDefaultKeypress('-', cmd);
+        define("Zoom Out", "Zoom out", "View");
+        key('-', cmd);
         break;
     case kZoomSet:
-        info.setInfo("Zoom to Whole Mix", "Fit the whole set in view", "View", 0);
-        info.addDefaultKeypress('z', shift);
+        define("Zoom to Whole Mix", "Fit the whole set in view", "View");
+        key('z', shift);
         break;
     case kZoomClip:
-        info.setInfo("Zoom to Clip", "Fit the selected clip in view", "View", 0);
-        info.addDefaultKeypress('z', 0);
+        define("Zoom to Clip", "Fit the selected clip in view", "View");
+        key('z');
         break;
     case kZoomTransition:
-        info.setInfo("Zoom to Transition", "Fit the mix into the selected clip in view", "View", 0);
-        info.addDefaultKeypress('t', 0);
-        info.setActive(hasClip);
+        define("Zoom to Transition", "Fit the mix into the selected clip in view", "View", hasClip);
+        key('t');
+        break;
+    case kZoomBeats:
+        define("Zoom to Beats", "Zoom in on the beats at the playhead", "View");
+        key('b');
         break;
     case kToggleFollow:
-        info.setInfo("Follow Playhead", "Keep the playhead in view while playing", "View", 0);
-        info.addDefaultKeypress('f', 0);
+        define("Follow Playhead", "Keep the playhead in view while playing", "View");
         info.setTicked(timeline_.followsPlayhead());
+        key('f');
         break;
+    case kToggleKeyNotation:
+        define("Key Notation: Standard / Camelot / Both", "Change how keys are written", "View");
+        key('k');
+        break;
+
     case kAudioSettings:
-        info.setInfo("Audio / MIDI Settings...", "Choose audio and MIDI devices", "Audio", 0);
-        info.addDefaultKeypress(',', cmd);
+        define("Audio / MIDI Settings...", "Choose audio and MIDI devices", "Audio");
+        key(',', cmd);
         break;
     default:
         break;
@@ -647,6 +828,7 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
 
 bool MainComponent::perform(const InvocationInfo& info)
 {
+    const double playhead = engine_.playheadSeconds();
     switch (info.commandID)
     {
     case kNew:
@@ -673,6 +855,29 @@ bool MainComponent::perform(const InvocationInfo& info)
         document_.edit([&](Set& s) { return edit::deleteClip(s, id); });
         break;
     }
+    case kKeyboardShortcuts:
+        showKeyboardShortcuts();
+        break;
+
+    case kSelectDeck1:
+    case kSelectDeck2:
+    case kSelectDeck3:
+    case kSelectDeck4:
+        select(timeline_.clipOnDeckNear(static_cast<int>(info.commandID - kSelectDeck1), playhead));
+        break;
+    case kSelectNextClip:
+    case kSelectPreviousClip:
+    {
+        const auto order = timeline_.clipsInOrder();
+        if (order.empty())
+            break;
+        auto it = std::find(order.begin(), order.end(), timeline_.selectedClip());
+        const auto n = static_cast<long>(order.size());
+        long index = it == order.end() ? -1 : it - order.begin();
+        index = info.commandID == kSelectNextClip ? (index + 1) % n : (index <= 0 ? n - 1 : index - 1);
+        select(order[static_cast<size_t>(index)]);
+        break;
+    }
     case kNudgeEarlier:
         nudgeSelected(-kNudgeSeconds);
         break;
@@ -685,18 +890,90 @@ bool MainComponent::perform(const InvocationInfo& info)
     case kNudgeLaterFine:
         nudgeSelected(kFineNudgeSeconds);
         break;
+    case kNudgeBeatEarlier:
+        nudgeSelectedByBeats(-1);
+        break;
+    case kNudgeBeatLater:
+        nudgeSelectedByBeats(1);
+        break;
     case kPitchUp:
         changeSelectedPitch(1);
         break;
     case kPitchDown:
         changeSelectedPitch(-1);
         break;
+    case kPitchUpCoarse:
+        changeSelectedPitch(kCoarsePitchSteps);
+        break;
+    case kPitchDownCoarse:
+        changeSelectedPitch(-kCoarsePitchSteps);
+        break;
+    case kPitchReset:
+        changeSelectedPitch(0, true);
+        break;
+    case kTrimStartToPlayhead:
+    case kTrimEndToPlayhead:
+    {
+        const Id id = timeline_.selectedClip();
+        const bool start = info.commandID == kTrimStartToPlayhead;
+        document_.edit([&](Set& s) {
+            return start ? edit::trimClipStart(s, id, playhead) : edit::trimClipEnd(s, id, playhead);
+        });
+        break;
+    }
+
+    case kGridDownbeatHere:
+        editSelectedGrid([](const BeatGrid& grid, std::optional<double> here) -> std::optional<BeatGrid> {
+            return here ? BeatGrid{grid.bpm, *here} : grid;
+        });
+        break;
+    case kGridEarlier:
+    case kGridLater:
+    {
+        const double shift = info.commandID == kGridEarlier ? -kGridShiftSeconds : kGridShiftSeconds;
+        editSelectedGrid([shift](const BeatGrid& grid, std::optional<double>) -> std::optional<BeatGrid> {
+            return BeatGrid{grid.bpm, grid.firstBeatSeconds + shift};
+        });
+        break;
+    }
+    case kGridHalve:
+    case kGridDouble:
+    case kGridSlower:
+    case kGridFaster:
+    {
+        const auto command = info.commandID;
+        editSelectedGrid([command](const BeatGrid& grid, std::optional<double> here) -> std::optional<BeatGrid> {
+            const double bpm = command == kGridHalve    ? grid.bpm / 2.0
+                               : command == kGridDouble ? grid.bpm * 2.0
+                               : command == kGridSlower ? grid.bpm - kGridBpmStep
+                                                        : grid.bpm + kGridBpmStep;
+            return retempo(grid, bpm, here);
+        });
+        break;
+    }
+    case kGridReset:
+    {
+        const auto sel = selection();
+        if (!sel)
+            break;
+        const Id trackId = sel.track->id;
+        document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, std::nullopt); });
+        break;
+    }
+
     case kPlayPause:
         engine_.isPlaying() ? engine_.pause() : engine_.play();
         break;
     case kGoToStart:
         engine_.seek(0.0);
         break;
+    case kJumpBack:
+        engine_.seek(std::max(0.0, playhead - kJumpSeconds));
+        break;
+    case kJumpForward:
+        engine_.seek(playhead + kJumpSeconds);
+        break;
+
     case kZoomIn:
         timeline_.zoomIn();
         break;
@@ -712,11 +989,21 @@ bool MainComponent::perform(const InvocationInfo& info)
     case kZoomTransition:
         timeline_.zoomToTransition();
         break;
+    case kZoomBeats:
+        timeline_.zoomToBeats();
+        break;
     case kToggleFollow:
         timeline_.setFollowPlayhead(!timeline_.followsPlayhead());
         followButton_.setToggleState(timeline_.followsPlayhead(), juce::dontSendNotification);
         commands_.commandStatusChanged();
         break;
+    case kToggleKeyNotation:
+        display_.keyNotation = static_cast<KeyNotation>((static_cast<int>(display_.keyNotation) + 1) % 3);
+        settings_.setValue("keyNotation", static_cast<int>(display_.keyNotation));
+        timeline_.repaint();
+        inspector_.refresh();
+        break;
+
     case kAudioSettings:
     {
         auto* selector =
@@ -742,7 +1029,7 @@ bool MainComponent::perform(const InvocationInfo& info)
 
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return {"File", "Edit", "View", "Audio"};
+    return {"File", "Edit", "Clip", "Grid", "View", "Audio"};
 }
 
 juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
@@ -765,18 +1052,29 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         menu.addSeparator();
         add({kDelete});
         menu.addSeparator();
-        add({kNudgeEarlier, kNudgeLater, kNudgeEarlierFine, kNudgeLaterFine});
-        menu.addSeparator();
-        add({kPitchUp, kPitchDown});
+        add({kKeyboardShortcuts});
         break;
     case 2:
-        add({kPlayPause, kGoToStart});
+        add({kSelectDeck1, kSelectDeck2, kSelectDeck3, kSelectDeck4, kSelectNextClip, kSelectPreviousClip});
         menu.addSeparator();
-        add({kZoomIn, kZoomOut, kZoomSet, kZoomClip, kZoomTransition});
+        add({kPitchUp, kPitchDown, kPitchUpCoarse, kPitchDownCoarse, kPitchReset});
         menu.addSeparator();
-        add({kToggleFollow});
+        add({kNudgeEarlier, kNudgeLater, kNudgeEarlierFine, kNudgeLaterFine, kNudgeBeatEarlier, kNudgeBeatLater});
+        menu.addSeparator();
+        add({kTrimStartToPlayhead, kTrimEndToPlayhead});
         break;
     case 3:
+        add({kGridDownbeatHere, kGridEarlier, kGridLater, kGridSlower, kGridFaster, kGridHalve, kGridDouble,
+             kGridReset});
+        break;
+    case 4:
+        add({kPlayPause, kGoToStart, kJumpBack, kJumpForward});
+        menu.addSeparator();
+        add({kZoomIn, kZoomOut, kZoomSet, kZoomClip, kZoomTransition, kZoomBeats});
+        menu.addSeparator();
+        add({kToggleFollow, kToggleKeyNotation});
+        break;
+    case 5:
     {
         add({kAudioSettings});
         menu.addSeparator();
@@ -860,7 +1158,7 @@ void MainComponent::resized()
     bar.removeFromLeft(12);
     for (auto [button, width] : {std::pair<juce::Button*, int>{&zoomOutButton_, 30}, {&zoomInButton_, 30},
                                  {&zoomSetButton_, 50}, {&zoomClipButton_, 50}, {&zoomTransitionButton_, 80},
-                                 {&followButton_, 70}})
+                                 {&zoomBeatsButton_, 56}, {&followButton_, 70}})
     {
         button->setBounds(bar.removeFromLeft(width));
         bar.removeFromLeft(4);

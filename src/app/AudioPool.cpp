@@ -50,7 +50,7 @@ std::shared_ptr<TrackAudio> decode(juce::AudioFormatManager& formats, const juce
 }
 } // namespace
 
-AudioPool::AudioPool()
+AudioPool::AudioPool(AnalysisCache& cache) : cache_(cache)
 {
     formats_.registerBasicFormats();
 }
@@ -84,30 +84,36 @@ void AudioPool::request(const std::string& path)
     if (entries_.count(path) != 0)
         return;
     entries_[path] = Entry{};
+    const auto cached = cache_.find(juce::File(juce::String(path)));
 
     juce::WeakReference<AudioPool> self(this);
-    pool_.addJob([this, self, path] {
+    pool_.addJob([this, self, path, cached] {
         Entry entry;
         const auto audio = decode(formats_, juce::File(juce::String(path)), entry.error);
         if (audio != nullptr)
         {
             entry.status = Status::Ready;
             entry.audio = audio;
-            entry.peaks = std::make_shared<WaveformPeaks>(audio);
+            entry.peaks = std::make_shared<WaveformPeaks>(*audio);
+            entry.analysis = cached ? *cached : analyseTrack(*audio);
         }
         else
         {
             entry.status = Status::Failed;
         }
-        juce::MessageManager::callAsync([self, path, entry] {
+        const bool analysed = audio != nullptr && !cached;
+        juce::MessageManager::callAsync([self, path, entry, analysed] {
             if (auto* pool = self.get())
-                pool->finished(path, entry);
+                pool->finished(path, entry, analysed);
         });
     });
 }
 
-void AudioPool::finished(const std::string& path, Entry entry)
+void AudioPool::finished(const std::string& path, Entry entry, bool analysed)
 {
+    if (analysed)
+        cache_.store(juce::File(juce::String(path)), entry.analysis);
+
     // Ignore results for files dropped from the set while they were loading.
     auto it = entries_.find(path);
     if (it == entries_.end())
@@ -120,6 +126,22 @@ const AudioPool::Entry* AudioPool::find(const std::string& path) const
 {
     auto it = entries_.find(path);
     return it == entries_.end() ? nullptr : &it->second;
+}
+
+std::optional<BeatGrid> AudioPool::gridFor(const Track& track) const
+{
+    if (track.grid)
+        return track.grid;
+    const auto* entry = find(track.path);
+    return entry != nullptr ? entry->analysis.grid : std::nullopt;
+}
+
+std::optional<MusicalKey> AudioPool::keyFor(const Track& track) const
+{
+    if (track.key)
+        return track.key;
+    const auto* entry = find(track.path);
+    return entry != nullptr ? entry->analysis.key : std::nullopt;
 }
 
 void AudioPool::retainOnly(const std::set<std::string>& paths)

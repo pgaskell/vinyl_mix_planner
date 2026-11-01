@@ -1,96 +1,85 @@
 #include "core/Waveform.h"
 
+#include "core/Filters.h"
+
 #include <algorithm>
+#include <cmath>
 
 namespace vmp
 {
 
 namespace
 {
-constexpr int64_t kFinestBin = 64;
+constexpr int64_t kFinestBin = 16;
 constexpr int64_t kLevelFactor = 8;
-constexpr int kNumLevels = 4; // 64, 512, 4096, 32768 frames per bin
+constexpr int kNumLevels = 5; // 16, 128, 1024, 8192, 65536 frames per bin
+
+uint8_t toByte(float level)
+{
+    return static_cast<uint8_t>(std::lround(std::clamp(level, 0.0f, 1.0f) * 255.0f));
+}
 } // namespace
 
-WaveformPeaks::WaveformPeaks(std::shared_ptr<const TrackAudio> audio) : audio_(std::move(audio))
+WaveformPeaks::WaveformPeaks(const TrackAudio& audio) : frames_(audio.frames)
 {
-    const float* samples = audio_->interleaved.data();
-    int64_t bin = kFinestBin;
-    for (int level = 0; level < kNumLevels; ++level, bin *= kLevelFactor)
-    {
-        Level l{bin, {}, {}};
-        const auto count = static_cast<size_t>((audio_->frames + bin - 1) / bin);
-        l.mins.resize(count);
-        l.maxs.resize(count);
+    ThreeBandSplitter splitter;
+    splitter.design(kLowMidHz, kMidHighHz, audio.sampleRate);
 
-        for (size_t i = 0; i < count; ++i)
+    Level finest{kFinestBin, std::vector<Bin>(static_cast<size_t>((frames_ + kFinestBin - 1) / kFinestBin))};
+    const float* samples = audio.interleaved.data();
+    std::array<float, 3> peak{};
+    for (int64_t f = 0; f < frames_; ++f)
+    {
+        float low, mid, high;
+        splitter.process(0.5f * (samples[f * 2] + samples[f * 2 + 1]), low, mid, high);
+        peak[0] = std::max(peak[0], std::abs(low));
+        peak[1] = std::max(peak[1], std::abs(mid));
+        peak[2] = std::max(peak[2], std::abs(high));
+        if ((f + 1) % kFinestBin == 0 || f + 1 == frames_)
         {
-            float lo = 0.0f, hi = 0.0f;
-            if (level == 0)
-            {
-                const int64_t first = static_cast<int64_t>(i) * bin;
-                const int64_t last = std::min(first + bin, audio_->frames);
-                lo = hi = samples[first * 2];
-                for (int64_t f = first * 2; f < last * 2; ++f)
-                {
-                    lo = std::min(lo, samples[f]);
-                    hi = std::max(hi, samples[f]);
-                }
-            }
-            else
-            {
-                // Built from the level below.
-                const auto& finer = levels_.back();
-                const size_t first = i * static_cast<size_t>(kLevelFactor);
-                const size_t last = std::min(first + static_cast<size_t>(kLevelFactor), finer.mins.size());
-                lo = *std::min_element(finer.mins.begin() + static_cast<long>(first),
-                                       finer.mins.begin() + static_cast<long>(last));
-                hi = *std::max_element(finer.maxs.begin() + static_cast<long>(first),
-                                       finer.maxs.begin() + static_cast<long>(last));
-            }
-            l.mins[i] = lo;
-            l.maxs[i] = hi;
+            finest.bins[static_cast<size_t>(f / kFinestBin)] = {toByte(peak[0]), toByte(peak[1]), toByte(peak[2])};
+            peak = {};
         }
-        levels_.push_back(std::move(l));
+    }
+    levels_.push_back(std::move(finest));
+
+    for (int level = 1; level < kNumLevels; ++level)
+    {
+        const auto& finer = levels_.back().bins;
+        Level coarser{levels_.back().binFrames * kLevelFactor,
+                      std::vector<Bin>((finer.size() + kLevelFactor - 1) / kLevelFactor)};
+        for (size_t i = 0; i < finer.size(); ++i)
+        {
+            auto& bin = coarser.bins[i / kLevelFactor];
+            for (size_t b = 0; b < 3; ++b)
+                bin[b] = std::max(bin[b], finer[i][b]);
+        }
+        levels_.push_back(std::move(coarser));
     }
 }
 
-std::pair<float, float> WaveformPeaks::range(int64_t first, int64_t last) const
+WaveformPeaks::Bands WaveformPeaks::range(int64_t first, int64_t last) const
 {
-    first = std::clamp<int64_t>(first, 0, audio_->frames);
-    last = std::clamp<int64_t>(last, 0, audio_->frames);
+    first = std::clamp<int64_t>(first, 0, frames_);
+    last = std::clamp<int64_t>(last, 0, frames_);
     if (last <= first)
-        return {0.0f, 0.0f};
-
-    const int64_t length = last - first;
-    if (length < kFinestBin)
-    {
-        const float* samples = audio_->interleaved.data();
-        float lo = samples[first * 2], hi = lo;
-        for (int64_t f = first * 2; f < last * 2; ++f)
-        {
-            lo = std::min(lo, samples[f]);
-            hi = std::max(hi, samples[f]);
-        }
-        return {lo, hi};
-    }
+        return {};
 
     // Coarsest level whose bins still fit inside the range; edges round out to whole bins.
+    const int64_t length = last - first;
     const Level* level = &levels_.front();
     for (const auto& l : levels_)
         if (l.binFrames <= length)
             level = &l;
 
     const auto firstBin = static_cast<size_t>(first / level->binFrames);
-    const auto lastBin = std::min(static_cast<size_t>((last + level->binFrames - 1) / level->binFrames),
-                                  level->mins.size());
-    float lo = level->mins[firstBin], hi = level->maxs[firstBin];
-    for (size_t b = firstBin + 1; b < lastBin; ++b)
-    {
-        lo = std::min(lo, level->mins[b]);
-        hi = std::max(hi, level->maxs[b]);
-    }
-    return {lo, hi};
+    const auto lastBin =
+        std::min(static_cast<size_t>((last + level->binFrames - 1) / level->binFrames), level->bins.size());
+    Bin peak{};
+    for (size_t i = firstBin; i < lastBin; ++i)
+        for (size_t b = 0; b < 3; ++b)
+            peak[b] = std::max(peak[b], level->bins[i][b]);
+    return {peak[0] / 255.0f, peak[1] / 255.0f, peak[2] / 255.0f};
 }
 
 } // namespace vmp

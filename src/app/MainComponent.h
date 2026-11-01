@@ -1,6 +1,8 @@
 #pragma once
 
+#include "app/AnalysisCache.h"
 #include "app/AudioPool.h"
+#include "app/Display.h"
 #include "app/Inspector.h"
 #include "app/IssuesPanel.h"
 #include "app/LibraryPanel.h"
@@ -67,8 +69,24 @@ private:
 
     std::optional<double> addFile(const juce::File& file, int deck, double start);
     void addFileAtPlayhead(const juce::File& file);
+
+    // The selected clip with its track and timing; empty if nothing usable is selected.
+    struct Selection
+    {
+        const Clip* clip = nullptr;
+        const Track* track = nullptr;
+        const ClipTiming* timing = nullptr;
+        explicit operator bool() const { return timing != nullptr; }
+    };
+    Selection selection() const;
+    void select(Id clip);
     void nudgeSelected(double seconds);
-    void changeSelectedPitch(int steps);
+    void nudgeSelectedByBeats(int beats);
+    void changeSelectedPitch(int steps, bool absolute = false);
+    // Changes the selected track's beat grid; `change` gets the current grid and the source
+    // time (seconds) under the playhead, or nullopt when the playhead is outside the clip.
+    void editSelectedGrid(const std::function<std::optional<BeatGrid>(const BeatGrid&, std::optional<double>)>& change);
+    void showKeyboardShortcuts();
 
     void newSet();
     void openSet();
@@ -94,9 +112,11 @@ private:
     uint64_t seenRevision_ = ~uint64_t{0};
 
     Engine engine_;
+    AnalysisCache analysisCache_;
     AudioPool pool_;
     juce::AudioDeviceManager deviceManager_;
     juce::ApplicationCommandManager commands_;
+    DisplayOptions display_;
 
     TimelineView timeline_;
     Inspector inspector_;
@@ -108,7 +128,7 @@ private:
     juce::TextButton playButton_{"Play"};
     juce::Label timeLabel_;
     juce::TextButton zoomOutButton_{"-"}, zoomInButton_{"+"}, zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
-        zoomTransitionButton_{"Transition"};
+        zoomTransitionButton_{"Transition"}, zoomBeatsButton_{"Beats"};
     juce::ToggleButton followButton_{"Follow"};
     juce::ComboBox modeBox_, decksBox_;
     juce::TextButton settingsButton_{"Audio..."};

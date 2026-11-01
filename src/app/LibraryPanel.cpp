@@ -10,6 +10,8 @@ LibraryPanel::LibraryPanel(AudioPool& pool, juce::PropertiesFile& settings)
     scanner_.startThread(juce::Thread::Priority::low);
 
     tree_.setMultiSelectEnabled(true);
+    // Leave the arrow keys and space to the app's shortcuts.
+    tree_.setWantsKeyboardFocus(false);
     tree_.setDragAndDropDescription("audio-files"); // lets files be dragged onto the timeline
     tree_.addListener(this);
     tree_.setColour(juce::TreeView::backgroundColourId, juce::Colour(0xff23262b));

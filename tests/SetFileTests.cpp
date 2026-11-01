@@ -17,8 +17,8 @@ Set makeSet()
     set.name = "Friday warm-up";
     set.numDecks = 3;
     set.tracks.push_back({1, "/Users/dj/Music/Björk/Ünïcode – track.flac", "Ünïcode", 15876000, 44100.0,
-                          PressedSpeed::Rpm45});
-    set.tracks.push_back({2, "/Users/dj/Music/b.wav", "", 17280000, 48000.0, PressedSpeed::Unknown});
+                          PressedSpeed::Rpm45, BeatGrid{123.456, 0.0123456789}, MusicalKey{10, true}});
+    set.tracks.push_back({2, "/Users/dj/Music/b.wav", "", 17280000, 48000.0, PressedSpeed::Unknown, {}, {}});
 
     Clip clip;
     clip.id = 3;
