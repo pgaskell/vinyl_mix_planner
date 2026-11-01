@@ -20,8 +20,13 @@ namespace vmp
 // Drag a clip to move it in time or to another deck, drag its edges to trim. Click the ruler
 // to move the playhead. Cmd+scroll or pinch to zoom, scroll to pan.
 //
-// Each lane can show one control's automation in a strip under the waveforms (menu in the lane
-// header): click to add a keypoint, drag to move it, double-click to delete, right-click for more.
+// Each lane can show one control's automation over its waveforms (menu in the lane header). Then
+// the clip body edits automation: click to add a keypoint, drag to move it, double-click to
+// delete, right-click for more; the square at the clip start is the starting value. Clips are
+// moved and trimmed by their title bar.
+//
+// While playing, the view follows the playhead unless you scroll or zoom away; it picks up again
+// once the playhead comes back into view, or on showPlayhead().
 class TimelineView : public juce::Component, public juce::FileDragAndDropTarget, public juce::DragAndDropTarget
 {
 public:
@@ -60,6 +65,9 @@ public:
     void setAutomationView(int deck, std::optional<Param> param);
     // None -> Pitch -> Volume -> Hi -> Mid -> Low -> None.
     void cycleAutomationView(int deck);
+
+    // Brings the playhead into view and resumes following it.
+    void showPlayhead();
 
     void setFollowPlayhead(bool follow) { follow_ = follow; }
     bool followsPlayhead() const { return follow_; }
@@ -114,8 +122,10 @@ private:
 
     int numDecks() const { return document_.set().numDecks; }
     juce::Rectangle<int> laneBounds(int deck) const;
-    juce::Rectangle<int> waveformBounds(int deck) const; // the lane minus its automation strip
-    juce::Rectangle<int> stripBounds(int deck) const;    // empty when no automation is shown
+    juce::Rectangle<int> waveformBounds(int deck) const;
+    // The part of the lane where automation is edited (below clip title bars); empty when the
+    // lane isn't showing automation.
+    juce::Rectangle<int> automationBounds(int deck) const;
     int deckAt(int y) const; // -1 outside the lanes
     double timeToX(double t) const { return kHeaderWidth + (t - viewStart_) * pixelsPerSecond_; }
     double xToTime(double x) const { return viewStart_ + (x - kHeaderWidth) / pixelsPerSecond_; }
@@ -131,9 +141,12 @@ private:
     double valueToY(Param param, double value, juce::Rectangle<int> strip) const;
     double yToValue(Param param, double y, juce::Rectangle<int> strip) const;
     Id clipInStripAt(int deck, double x) const;
-    std::optional<size_t> keypointAt(const Clip& clip, Param param, juce::Point<float> position) const;
+    // Index of the keypoint at a position, or kStartPoint for the starting value.
+    static constexpr int kStartPoint = -1;
+    std::optional<int> keypointAt(const Clip& clip, Param param, juce::Point<float> position) const;
     void stripMouseDown(const juce::MouseEvent& e, int deck);
-    void showStripMenu(Id clip, Param param, std::optional<size_t> keypoint);
+    void showStripMenu(Id clip, Param param, std::optional<int> keypoint);
+    void navigatedByHand() { followSuspended_ = engine_.isPlaying(); }
 
     void paintRuler(juce::Graphics& g);
     void paintClip(juce::Graphics& g, const Clip& clip, const ClipTiming& timing);
@@ -153,6 +166,7 @@ private:
     double viewStart_ = -10.0;
     double playhead_ = 0.0;
     bool follow_ = true;
+    bool followSuspended_ = false; // the user scrolled away while playing
 
     Id selected_ = 0;
     std::map<Id, ClipTiming> timings_;
@@ -167,7 +181,7 @@ private:
     double dragAnchorTime_ = 0.0;
     std::optional<ClipTiming> dragTiming_; // the clip's timing when a keypoint drag began
     Param dragParam_ = Param::Volume;
-    size_t dragKeypoint_ = 0;
+    int dragKeypoint_ = 0;
     std::optional<std::pair<int, double>> dropHint_; // deck, time
 };
 

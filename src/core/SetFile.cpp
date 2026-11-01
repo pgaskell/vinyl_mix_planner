@@ -174,7 +174,7 @@ Set setFromJson(const std::string& text)
             clip.startSeconds = c.at("start").get<double>();
             clip.inFrame = c.at("in").get<int64_t>();
             clip.outFrame = c.at("out").get<int64_t>();
-            clip.pitchSteps = c.at("pitchSteps").get<int>();
+            clip.pitchSteps = c.at("pitchSteps").get<double>();
             // Version 1 had "pitchMoves" instead, which the app never let you create: ignored.
             if (c.contains("automation"))
                 for (int p = 0; p < kNumParams; ++p)

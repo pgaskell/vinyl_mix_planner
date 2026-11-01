@@ -3,6 +3,7 @@
 #include "app/Commands.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
+#include "core/Pitch.h"
 #include "core/SetFile.h"
 
 namespace vmp
@@ -409,13 +410,17 @@ void MainComponent::nudgeSelectedByBeats(int beats)
 
 void MainComponent::changeSelectedPitch(int steps, bool absolute)
 {
+    // Like moving the deck's pitch fader: from its value at the playhead, writing a keypoint if
+    // pitch is automated.
     const auto sel = selection();
     if (!sel)
         return;
     const Id id = sel.clip->id;
-    const int pitch = absolute ? steps : sel.clip->pitchSteps + steps;
-    const double pivot = engine_.playheadSeconds();
-    document_.edit([&](Set& s) { return edit::setClipPitch(s, id, pitch, pivot); });
+    const double playhead = engine_.playheadSeconds();
+    const double t = std::clamp(playhead, sel.timing->startSeconds(), sel.timing->endSeconds());
+    const double current = std::round(pitchStepsFromSpeed(sel.timing->speedAt(t)));
+    const double pitch = absolute ? steps : current + steps;
+    document_.edit([&](Set& s) { return edit::setParamAt(s, id, Param::Pitch, pitch, playhead); });
 }
 
 void MainComponent::editSelectedGrid(
@@ -767,11 +772,23 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         break;
     case kNudgeEarlierFine:
         define("Nudge Earlier (Fine)", "Slip the selected record 1 ms earlier", "Clip", hasClip);
-        key(KeyPress::leftKey, shift);
+        key(KeyPress::leftKey, cmd);
         break;
     case kNudgeLaterFine:
         define("Nudge Later (Fine)", "Slip the selected record 1 ms later", "Clip", hasClip);
+        key(KeyPress::rightKey, cmd);
+        break;
+    case kNudgeBarsEarlier:
+        define("Nudge 4 Bars Earlier", "Move the selected record 4 bars of its own grid earlier", "Clip", hasClip);
+        key(KeyPress::leftKey, shift);
+        break;
+    case kNudgeBarsLater:
+        define("Nudge 4 Bars Later", "Move the selected record 4 bars of its own grid later", "Clip", hasClip);
         key(KeyPress::rightKey, shift);
+        break;
+    case kShowPlayhead:
+        define("Show Playhead", "Scroll to the playhead and follow it again", "View");
+        key('p');
         break;
     case kNudgeBeatEarlier:
         define("Nudge One Beat Earlier", "Slip the selected record one beat earlier", "Clip", hasClip);
@@ -981,6 +998,15 @@ bool MainComponent::perform(const InvocationInfo& info)
     case kNudgeLaterFine:
         nudgeSelected(kFineNudgeSeconds);
         break;
+    case kNudgeBarsEarlier:
+        nudgeSelectedByBeats(-16);
+        break;
+    case kNudgeBarsLater:
+        nudgeSelectedByBeats(16);
+        break;
+    case kShowPlayhead:
+        timeline_.showPlayhead();
+        break;
     case kNudgeBeatEarlier:
         nudgeSelectedByBeats(-1);
         break;
@@ -1170,7 +1196,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         menu.addSeparator();
         add({kPitchUp, kPitchDown, kPitchUpCoarse, kPitchDownCoarse, kPitchReset});
         menu.addSeparator();
-        add({kNudgeEarlier, kNudgeLater, kNudgeEarlierFine, kNudgeLaterFine, kNudgeBeatEarlier, kNudgeBeatLater});
+        add({kNudgeEarlier, kNudgeLater, kNudgeEarlierFine, kNudgeLaterFine, kNudgeBeatEarlier, kNudgeBeatLater,
+             kNudgeBarsEarlier, kNudgeBarsLater});
         menu.addSeparator();
         add({kTrimStartToPlayhead, kTrimEndToPlayhead});
         break;
@@ -1183,7 +1210,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         menu.addSeparator();
         add({kZoomIn, kZoomOut, kZoomSet, kZoomClip, kZoomTransition, kZoomBeats});
         menu.addSeparator();
-        add({kToggleFollow, kToggleKeyNotation, kCycleAutomationView});
+        add({kShowPlayhead, kToggleFollow, kToggleKeyNotation, kCycleAutomationView});
         break;
     case 5:
     {
@@ -1290,7 +1317,7 @@ void MainComponent::resized()
 
     library_.setBounds(area.removeFromLeft(220));
     auto right = area.removeFromRight(std::max(250, MixerPanel::preferredWidth(document_.set().numDecks)));
-    inspector_.setBounds(right.removeFromTop(300));
+    inspector_.setBounds(right.removeFromTop(325));
     mixer_.setBounds(right);
     bottomTabs_.setBounds(area.removeFromBottom(130));
     timeline_.setBounds(area);

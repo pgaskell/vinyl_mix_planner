@@ -298,3 +298,30 @@ TEST_CASE("Grid and key corrections are stored on the track and can be cleared")
     REQUIRE(edit::setTrackKey(set, track, MusicalKey{9, true}));
     CHECK(set.tracks.front().key == MusicalKey{9, true});
 }
+
+TEST_CASE("Trimming the start into a slide keeps the automation sounding the same")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 0.0);
+    edit::setAutomationPoint(set, id, Param::Volume, frames(10.0), 0.0);
+    edit::setAutomationPoint(set, id, Param::Volume, frames(30.0), 1.0);
+    const Clip before = onlyClip(set);
+
+    REQUIRE(edit::trimClipStart(set, id, 20.0)); // half way up the fade
+    CHECK(onlyClip(set).mixer.fader == Approx(0.5));
+    for (double seconds : {20.0, 25.0, 35.0})
+        CHECK(valueAt(onlyClip(set), Param::Volume, seconds * kRate) == Approx(valueAt(before, Param::Volume, seconds * kRate)));
+}
+
+TEST_CASE("The starting point can be moved, and a control at the needle drop moves it")
+{
+    auto set = makeSet();
+    const Id id = edit::addClip(set, set.tracks.front().id, 0, 10.0);
+    REQUIRE(edit::setStartValue(set, id, Param::High, 0.25));
+    CHECK(onlyClip(set).mixer.high == 0.25);
+
+    edit::setAutomationPoint(set, id, Param::High, frames(5.0), 0.75);
+    REQUIRE(edit::setParamAt(set, id, Param::High, 0.1, 10.0)); // playhead at the needle drop
+    CHECK(onlyClip(set).mixer.high == 0.1);
+    CHECK(onlyClip(set).points(Param::High).size() == 1);
+}

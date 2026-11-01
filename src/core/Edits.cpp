@@ -39,6 +39,49 @@ double clamp01(double v)
 {
     return std::clamp(v, 0.0, 1.0);
 }
+
+// After an edit that changes the clip's speed, slides the clip so the music that was at
+// `pivotSeconds` is there again, as when you move the pitch fader on a playing deck. Does nothing
+// if the pivot is outside the clip.
+void keepMusicAt(Clip& clip, const Track& track, const ClipTiming& before, std::optional<double> pivotSeconds)
+{
+    if (!pivotSeconds || *pivotSeconds <= before.startSeconds() || *pivotSeconds >= before.endSeconds())
+        return;
+    const double frame = before.sourceFrameAt(*pivotSeconds);
+    clip.startSeconds += *pivotSeconds - ClipTiming(clip, track).timelineSecondsAt(frame);
+}
+
+double clampValue(Param param, double value)
+{
+    const auto range = paramRange(param);
+    if (param == Param::Pitch)
+        value = std::round(value); // whole 0.05% steps
+    return std::clamp(value, range.min, range.max);
+}
+
+// The starting value for a mixer control. Not for pitch.
+double& mixerValue(ChannelSettings& m, Param param)
+{
+    switch (param)
+    {
+    case Param::High:
+        return m.high;
+    case Param::Mid:
+        return m.mid;
+    case Param::Low:
+        return m.low;
+    case Param::Volume:
+    case Param::Pitch:
+        break;
+    }
+    return m.fader;
+}
+
+void sortPoints(std::vector<AutomationPoint>& points)
+{
+    std::stable_sort(points.begin(), points.end(),
+                     [](const AutomationPoint& a, const AutomationPoint& b) { return a.sourceFrame < b.sourceFrame; });
+}
 } // namespace
 
 Id addTrack(Set& set, Track track)
@@ -111,7 +154,22 @@ bool trimClipStart(Set& set, Id clipId, double newStartSeconds)
     const double target = std::clamp(newStartSeconds, earliest, latest);
     const auto newIn = std::clamp<int64_t>(std::llround(timing->sourceFrameAt(target)), 0, clip->outFrame - 1);
     // Recompute the start from the whole-frame in-point so the music doesn't shift by the rounding.
-    clip->startSeconds = timing->timelineSecondsAt(static_cast<double>(newIn));
+    const double newStart = timing->timelineSecondsAt(static_cast<double>(newIn));
+
+    // Automated controls start where their automation was at the new needle drop, so the clip
+    // sounds the same from there on. Pitch uses the exact speed, which may fall between steps.
+    const Clip old = *clip;
+    for (int p = 0; p < kNumParams; ++p)
+    {
+        const auto param = static_cast<Param>(p);
+        if (old.points(param).empty())
+            continue;
+        if (param == Param::Pitch)
+            clip->pitchSteps = pitchStepsFromSpeed(timing->speedAt(newStart));
+        else
+            mixerValue(clip->mixer, param) = valueAt(old, param, static_cast<double>(newIn));
+    }
+    clip->startSeconds = newStart;
     clip->inFrame = newIn;
     return true;
 }
@@ -133,51 +191,6 @@ bool trimClipEnd(Set& set, Id clipId, double newEndSeconds)
     return true;
 }
 
-namespace
-{
-// After an edit that changes the clip's speed, slides the clip so the music that was at
-// `pivotSeconds` is there again, as when you move the pitch fader on a playing deck. Does nothing
-// if the pivot is outside the clip.
-void keepMusicAt(Clip& clip, const Track& track, const ClipTiming& before, std::optional<double> pivotSeconds)
-{
-    if (!pivotSeconds || *pivotSeconds <= before.startSeconds() || *pivotSeconds >= before.endSeconds())
-        return;
-    const double frame = before.sourceFrameAt(*pivotSeconds);
-    clip.startSeconds += *pivotSeconds - ClipTiming(clip, track).timelineSecondsAt(frame);
-}
-
-double clampValue(Param param, double value)
-{
-    const auto range = paramRange(param);
-    if (param == Param::Pitch)
-        value = std::round(value); // whole 0.05% steps
-    return std::clamp(value, range.min, range.max);
-}
-
-// The starting value for a mixer control. Not for pitch.
-double& mixerValue(ChannelSettings& m, Param param)
-{
-    switch (param)
-    {
-    case Param::High:
-        return m.high;
-    case Param::Mid:
-        return m.mid;
-    case Param::Low:
-        return m.low;
-    case Param::Volume:
-    case Param::Pitch:
-        break;
-    }
-    return m.fader;
-}
-
-void sortPoints(std::vector<AutomationPoint>& points)
-{
-    std::stable_sort(points.begin(), points.end(),
-                     [](const AutomationPoint& a, const AutomationPoint& b) { return a.sourceFrame < b.sourceFrame; });
-}
-} // namespace
 
 bool setClipPitch(Set& set, Id clipId, int pitchSteps, std::optional<double> pivotSeconds)
 {
@@ -241,9 +254,21 @@ bool clearAutomation(Set& set, Id clipId, Param param)
     const double first = valueAt(*clip, param, static_cast<double>(clip->inFrame));
     clip->points(param).clear();
     if (param == Param::Pitch)
-        clip->pitchSteps = clampPitchSteps(static_cast<int>(std::lround(first)));
+        clip->pitchSteps = std::clamp(first, -double(kMaxPitchSteps), double(kMaxPitchSteps));
     else
         mixerValue(clip->mixer, param) = clampValue(param, first);
+    return true;
+}
+
+bool setStartValue(Set& set, Id clipId, Param param, double value)
+{
+    Clip* clip = findClip(set, clipId);
+    if (clip == nullptr || !std::isfinite(value))
+        return false;
+    if (param == Param::Pitch)
+        clip->pitchSteps = clampValue(param, value);
+    else
+        mixerValue(clip->mixer, param) = clampValue(param, value);
     return true;
 }
 
@@ -262,10 +287,13 @@ bool setParamAt(Set& set, Id clipId, Param param, double value, double playheadS
         return true;
     }
 
-    // Automated: write a keypoint at the music under the playhead, replacing one close by.
+    // Automated: write a keypoint at the music under the playhead, replacing one close by. At the
+    // needle drop itself, that's the starting point.
     const ClipTiming before(*clip, *track);
     if (playheadSeconds < before.startSeconds() || playheadSeconds > before.endSeconds())
         return false;
+    if (playheadSeconds - before.startSeconds() <= kKeypointSnapSeconds)
+        return setStartValue(set, clipId, param, value);
     const auto frame = static_cast<int64_t>(std::llround(before.sourceFrameAt(playheadSeconds)));
     const auto nearby = static_cast<int64_t>(kKeypointSnapSeconds * track->sampleRate);
     auto& points = clip->points(param);

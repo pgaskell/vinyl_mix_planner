@@ -183,9 +183,20 @@ TEST_CASE("Automation values slide linearly between keypoints")
     CHECK(valueAt(clip, Param::Volume, 1000.0) == 0.8); // no keypoints: the starting value
 
     clip.points(Param::Volume) = {{1000, 1.0}, {3000, 0.0}, {3000, 0.5}};
-    CHECK(valueAt(clip, Param::Volume, 0.0) == 1.0);     // held before the first
+    CHECK(valueAt(clip, Param::Volume, 0.0) == 0.8);     // the starting point, at the needle drop
+    CHECK(valueAt(clip, Param::Volume, 500.0) == Approx(0.9)); // sliding to the first keypoint
     CHECK(valueAt(clip, Param::Volume, 2000.0) == Approx(0.5));
     CHECK(valueAt(clip, Param::Volume, 3500.0) == 0.5);  // the jump at 3000 lands on the later point
     CHECK(mixerAt(clip, 2000.0).fader == Approx(0.5));
     CHECK(mixerAt(clip, 2000.0).high == 0.5);            // untouched controls keep their starting values
+}
+
+TEST_CASE("Keypoints before the needle drop are ignored")
+{
+    Clip clip;
+    clip.inFrame = 5000;
+    clip.mixer.low = 0.2;
+    clip.points(Param::Low) = {{1000, 1.0}, {6000, 0.4}};
+    CHECK(valueAt(clip, Param::Low, 5000.0) == Approx(0.2));
+    CHECK(valueAt(clip, Param::Low, 5500.0) == Approx(0.3));
 }

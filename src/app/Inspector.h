@@ -56,8 +56,8 @@ private:
     juce::ComboBox keyBox_;
 
     juce::Label nudgeCaption_;
-    juce::TextButton beatBack_{"-beat"}, back10_{"-10"}, back1_{"-1"}, forward1_{"+1"}, forward10_{"+10"},
-        beatForward_{"+beat"};
+    juce::TextButton barsBack_{"-4 bars"}, beatBack_{"-beat"}, beatForward_{"+beat"}, barsForward_{"+4 bars"};
+    juce::TextButton back10_{"-10 ms"}, back1_{"-1 ms"}, forward1_{"+1 ms"}, forward10_{"+10 ms"};
 
     juce::Label pitchCaption_;
     juce::TextButton pitchDown_{"-0.05"}, pitchZero_{"0"}, pitchUp_{"+0.05"};

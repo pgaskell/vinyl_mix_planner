@@ -95,10 +95,12 @@ struct Clip
     double startSeconds = 0.0;
     int64_t inFrame = 0;
     int64_t outFrame = 0;
-    // Starting values, used for a control while it has no keypoints.
-    int pitchSteps = 0;
+    // Starting values: a fixed point at the needle drop for each control. New clips start from
+    // the defaults (0% pitch, full volume, EQ centred).
+    double pitchSteps = 0; // whole steps, except after trimming into a pitch slide
     ChannelSettings mixer;
-    // Keypoints per Param, sorted by sourceFrame. Two points at one frame make a jump.
+    // Keypoints per Param after the starting point, sorted by sourceFrame. Two points at one
+    // frame make a jump. Keypoints before the needle drop are kept but ignored.
     std::array<std::vector<AutomationPoint>, kNumParams> automation;
 
     const std::vector<AutomationPoint>& points(Param p) const { return automation[static_cast<size_t>(p)]; }
@@ -109,10 +111,9 @@ struct Clip
 
 // The clip's starting value for a control.
 double baseValue(const Clip& clip, Param param);
-// A control's value at a position in the music: the starting value when it has no keypoints,
-// otherwise linear between keypoints, holding the first before it and the last after it.
-// (Pitch slides are linear in time, which ClipTiming models exactly; this is the source-linear
-// approximation, fine for display.)
+// A control's value at a position in the music: linear from the starting value at the needle
+// drop through the keypoints, holding the last. (Pitch slides are linear in time, which
+// ClipTiming models exactly; this is the source-linear approximation, fine for display.)
 double valueAt(const Clip& clip, Param param, double sourceFrame);
 ChannelSettings mixerAt(const Clip& clip, double sourceFrame);
 

@@ -50,6 +50,9 @@ bool deleteAutomationPoint(Set& set, Id clipId, Param param, size_t index);
 // Removes all keypoints; the value at the start of the clip becomes its starting value.
 bool clearAutomation(Set& set, Id clipId, Param param);
 
+// Moves the control's starting point (at the needle drop). Pitch: the needle drop stays put.
+bool setStartValue(Set& set, Id clipId, Param param, double value);
+
 // What turning a control on the mixer does. With no keypoints it changes the clip's starting
 // value; with keypoints it sets one at the music under the playhead (so moving a control while
 // playing records automation). Pitch changes keep the music under the playhead in place.

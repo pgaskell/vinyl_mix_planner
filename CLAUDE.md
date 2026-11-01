@@ -56,9 +56,11 @@ DJM-900NXS2, and generic Core Audio devices).
 - Audio thread: no locks, no allocation, no freeing. Controls are atomics; whole objects
   (tracks) go through the pending/retired hand-off in `Deck`.
 - Store positions in source-file frames, not seconds after pitch. Timeline is in seconds; no tempo grid.
-- Automation: per clip, per control (pitch, volume, hi, mid, low) keypoints anchored to source frames
-  (the music), linear between points; no keypoints = the clip's starting value. Pitch slides are linear
-  in time (PitchCurve). A mixer control with keypoints writes a keypoint at the playhead (touch-style).
+- Automation: per clip, per control (pitch, volume, hi, mid, low). The clip's starting value is a fixed
+  point at the needle drop; keypoints (anchored to source frames, i.e. the music) follow, linear between
+  points; keypoints before the in-point are ignored. Trimming the start carries automated values into the
+  starting values (pitch may become fractional steps). Pitch slides are linear in time (PitchCurve).
+  A mixer control with keypoints writes a keypoint at the playhead (touch-style).
 - `ClipTiming` is the only place that maps timeline <-> source; UI and engine must both use it.
 - All set changes go through `SetDocument::edit` with an `edit::` function (undo = whole-set snapshots;
   wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.

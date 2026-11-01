@@ -74,8 +74,10 @@ Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOption
     addAndMakeVisible(keyBox_);
 
     // --- Nudge ---
-    setCaption(nudgeCaption_, "NUDGE (ms)");
+    setCaption(nudgeCaption_, "NUDGE");
     addAndMakeVisible(nudgeCaption_);
+    setUpCommandButton(barsBack_, kNudgeBarsEarlier, "Move the record 4 bars earlier");
+    setUpCommandButton(barsForward_, kNudgeBarsLater, "Move the record 4 bars later");
     setUpCommandButton(beatBack_, kNudgeBeatEarlier, "Slip the record one beat earlier");
     setUpCommandButton(back10_, kNudgeEarlier, "Slip the record 10 ms earlier");
     setUpCommandButton(back1_, kNudgeEarlierFine, "Slip the record 1 ms earlier");
@@ -304,7 +306,8 @@ void Inspector::resized()
     harmony_.setBounds(row(30));
 
     nudgeCaption_.setBounds(row(16));
-    buttonRow(row(22), {&beatBack_, &back10_, &back1_, &forward1_, &forward10_, &beatForward_});
+    buttonRow(row(22), {&barsBack_, &beatBack_, &beatForward_, &barsForward_});
+    buttonRow(row(22), {&back10_, &back1_, &forward1_, &forward10_});
 
     pitchCaption_.setBounds(row(16));
     buttonRow(row(22), {&pitchDown_, &pitchZero_, &pitchUp_});

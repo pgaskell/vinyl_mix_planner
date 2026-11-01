@@ -68,19 +68,23 @@ double baseValue(const Clip& clip, Param param)
 
 double valueAt(const Clip& clip, Param param, double sourceFrame)
 {
-    const auto& points = clip.points(param);
-    if (points.empty())
-        return baseValue(clip, param);
-    auto next = std::upper_bound(points.begin(), points.end(), sourceFrame,
-                                 [](double frame, const AutomationPoint& p) { return frame < static_cast<double>(p.sourceFrame); });
-    if (next == points.begin())
-        return points.front().value;
-    const auto& before = *std::prev(next);
-    if (next == points.end())
-        return before.value;
-    const double span = static_cast<double>(next->sourceFrame - before.sourceFrame);
-    const double fraction = (sourceFrame - static_cast<double>(before.sourceFrame)) / span;
-    return before.value + (next->value - before.value) * fraction;
+    // The starting value is a fixed point at the needle drop; keypoints from there on follow.
+    // Keypoints before the needle drop (trimmed away) are ignored.
+    const auto inFrame = static_cast<double>(clip.inFrame);
+    double fromFrame = inFrame, fromValue = baseValue(clip, param);
+    if (sourceFrame < inFrame)
+        return fromValue;
+    for (const auto& point : clip.points(param))
+    {
+        const auto frame = static_cast<double>(point.sourceFrame);
+        if (frame < inFrame)
+            continue;
+        if (sourceFrame < frame)
+            return fromValue + (point.value - fromValue) * (sourceFrame - fromFrame) / (frame - fromFrame);
+        fromFrame = frame;
+        fromValue = point.value;
+    }
+    return fromValue;
 }
 
 ChannelSettings mixerAt(const Clip& clip, double sourceFrame)
@@ -95,12 +99,14 @@ namespace
 {
 PitchCurve makeCurve(const Clip& clip, const Track& track)
 {
-    std::vector<PitchCurve::Point> points;
-    points.reserve(clip.points(Param::Pitch).size());
+    // Same shape as valueAt(): the starting pitch at the needle drop, then the keypoints after it.
+    const double baseSpeed = speedFromPitchSteps(clip.pitchSteps);
+    std::vector<PitchCurve::Point> points{{0.0, baseSpeed}};
     for (const auto& p : clip.points(Param::Pitch))
-        points.push_back({static_cast<double>(p.sourceFrame - clip.inFrame) / track.sampleRate,
-                          1.0 + p.value * kPitchStepPercent / 100.0});
-    return PitchCurve(speedFromPitchSteps(clip.pitchSteps), std::move(points));
+        if (p.sourceFrame >= clip.inFrame)
+            points.push_back({static_cast<double>(p.sourceFrame - clip.inFrame) / track.sampleRate,
+                              1.0 + p.value * kPitchStepPercent / 100.0});
+    return PitchCurve(baseSpeed, std::move(points));
 }
 } // namespace
 
@@ -146,9 +152,9 @@ std::string deckName(int deck)
     return "Deck " + std::to_string(deck + 1);
 }
 
-bool pitchInRange(int steps)
+bool pitchInRange(double steps)
 {
-    return steps >= -kMaxPitchSteps && steps <= kMaxPitchSteps;
+    return std::abs(steps) <= kMaxPitchSteps;
 }
 
 struct Placed

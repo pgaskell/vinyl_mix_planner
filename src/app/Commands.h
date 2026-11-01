@@ -61,7 +61,10 @@ enum Command : juce::CommandID
     kPreviousMix,
     kNextMix,
     kCycleAutomationView,
-    kLastCommand = kCycleAutomationView
+    kNudgeBarsEarlier,
+    kNudgeBarsLater,
+    kShowPlayhead,
+    kLastCommand = kShowPlayhead
 };
 
 } // namespace vmp

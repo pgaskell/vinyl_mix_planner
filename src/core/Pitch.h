@@ -32,6 +32,17 @@ inline double speedFromPitchSteps(int steps)
     return 1.0 + pitchPercentFromSteps(steps) / 100.0;
 }
 
+// For pitch part way through a slide, which can fall between steps.
+inline double speedFromPitchSteps(double steps)
+{
+    return 1.0 + std::clamp(steps, -double(kMaxPitchSteps), double(kMaxPitchSteps)) * kPitchStepPercent / 100.0;
+}
+
+inline double pitchStepsFromSpeed(double speed)
+{
+    return (speed - 1.0) * 100.0 / kPitchStepPercent;
+}
+
 // How far the musical key moves at a given speed: +6% is roughly +1 semitone.
 inline double semitoneShiftForSpeed(double speed)
 {
