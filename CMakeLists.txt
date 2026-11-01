@@ -34,6 +34,7 @@ add_library(vmp_core STATIC
     src/core/Analysis.cpp
     src/core/Document.cpp
     src/core/Edits.cpp
+    src/core/HardwareMixer.cpp
     src/core/Musical.cpp
     src/core/PitchCurve.cpp
     src/core/Set.cpp
@@ -64,6 +65,9 @@ juce_add_gui_app(VinylMixPlanner
     COMPANY_NAME "Vinyl Mix Planner"
     BUNDLE_ID org.vinylmixplanner.app
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/resources/AppIcon.png"
+    # Core Audio inputs (a mixer's USB send, not just the built-in mic) need this permission.
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Recording what your mixer sends back over USB."
     NEEDS_WEB_BROWSER FALSE
     NEEDS_CURL FALSE)
 
@@ -79,6 +83,7 @@ target_sources(VinylMixPlanner PRIVATE
     src/app/LibraryPanel.cpp
     src/app/Main.cpp
     src/app/MainComponent.cpp
+    src/app/MidiMonitor.cpp
     src/app/MixerPanel.cpp
     src/app/TimelineView.cpp)
 
@@ -113,6 +118,7 @@ if(VMP_BUILD_TESTS)
         tests/DeckTests.cpp
         tests/EditsTests.cpp
         tests/EngineTests.cpp
+        tests/HardwareMixerTests.cpp
         tests/MixerChannelTests.cpp
         tests/MotorTests.cpp
         tests/MusicalTests.cpp

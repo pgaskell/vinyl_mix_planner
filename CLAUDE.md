@@ -88,6 +88,11 @@ DJM-900NXS2, and generic Core Audio devices).
   Any shim that keeps old files or settings working must be listed in TODO.md under
   "Before a public release: drop backwards compatibility", so it can be removed in one go.
 - Drivers only pass enabled channels: always route through the physical->buffer map.
+- Hardware mixers: `core/HardwareMixer` holds each model's MIDI map (`MixerProfile`, matched by device
+  name) and follows its controls. MIDI arrives as 0..127; knobs map with the centre detent exactly at 0.5.
+  The DJM's control MIDI is off until its ON/OFF (UTILITY) button is pressed; selectors are tracked by
+  the last note-on (offs can go missing). USB pair n plays on channel n. Reading Core Audio inputs
+  (any device, not just the built-in mic) needs microphone permission, or they read as silence.
 
 ## Building on this machine
 - Use `/opt/homebrew/bin/cmake` and `ninja`. The ones in `/usr/local/bin` are Intel builds that

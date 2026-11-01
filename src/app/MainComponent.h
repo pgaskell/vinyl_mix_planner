@@ -9,10 +9,12 @@
 #include "app/Inspector.h"
 #include "app/IssuesPanel.h"
 #include "app/LibraryPanel.h"
+#include "app/MidiMonitor.h"
 #include "app/MixerPanel.h"
 #include "app/SplitterBar.h"
 #include "app/TimelineView.h"
 #include "core/Document.h"
+#include "core/HardwareMixer.h"
 #include "engine/Engine.h"
 #include "engine/Prefetcher.h"
 
@@ -73,6 +75,9 @@ private:
     void updateTitle();
     void updateDeviceInfo();
     void collectGlitches();
+    // Turns on the MIDI inputs of mixers we know, including ones plugged in later.
+    void enableMixerMidiInputs();
+    void updateHardwareMixer();
 
     std::optional<double> addFile(const juce::File& file, int deck, double start);
     void addFileAtPlayhead(const juce::File& file);
@@ -140,7 +145,7 @@ private:
     int libraryWidthAtDragStart_ = 220;
     IssuesPanel issues_;
     GlitchPanel glitches_;
-    juce::TextEditor midiLog_;
+    MidiMonitor midiMonitor_;
     juce::TabbedComponent bottomTabs_{juce::TabbedButtonBar::TabsAtTop};
 
     IconButton previousMixButton_{Icon::PreviousMix}, rewindButton_{Icon::Rewind}, playButton_{Icon::Play},
@@ -167,8 +172,16 @@ private:
     std::unique_ptr<juce::FileChooser> chooser_;
 
     juce::CriticalSection midiLock_;
-    juce::StringArray pendingMidi_; // guarded by midiLock_
-    juce::StringArray midiLines_;
+    struct MixerMidi
+    {
+        const MixerProfile* profile;
+        std::array<uint8_t, 3> data;
+    };
+    static constexpr size_t kMaxPendingMixerMidi = 10000;
+    std::vector<MixerMidi> pendingMixerMidi_; // guarded by midiLock_
+    // The hardware mixer the audio device is (direct out), followed from its MIDI.
+    std::optional<HardwareMixer> hardwareMixer_;
+    juce::MidiDeviceListConnection midiDevices_;
 };
 
 } // namespace vmp

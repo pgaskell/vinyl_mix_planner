@@ -26,7 +26,6 @@ constexpr double kFineNudgeSeconds = 0.001;
 const int kCoarsePitchSteps = pitchStepsFromPercent(0.5);
 constexpr double kGridShiftSeconds = 0.002;
 constexpr double kGridBpmStep = 0.01;
-constexpr int kMidiLogLines = 300;
 const juce::Colour kBackground{0xff1b1d21};
 } // namespace
 
@@ -87,9 +86,6 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
         timeline_.setSelectedClip(clip);
         timeline_.zoomToClip();
     };
-    midiLog_.setMultiLine(true);
-    midiLog_.setReadOnly(true);
-    midiLog_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
     const auto tabColour = juce::Colour(0xff23262b);
     glitches_.onGlitchClicked = [this](double seconds) {
         engine_.seek(std::max(0.0, seconds - 2.0)); // a little before, to hear it coming
@@ -101,7 +97,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     };
     bottomTabs_.addTab("Issues", tabColour, &issues_, false);
     bottomTabs_.addTab("Glitches", tabColour, &glitches_, false);
-    bottomTabs_.addTab("MIDI monitor", tabColour, &midiLog_, false);
+    bottomTabs_.addTab("MIDI monitor", tabColour, &midiMonitor_, false);
     addAndMakeVisible(bottomTabs_);
 
     // --- Toolbar ---
@@ -169,6 +165,8 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     if (savedDevice == nullptr)
         for (const auto& input : juce::MidiInput::getAvailableDevices())
             deviceManager_.setMidiInputDeviceEnabled(input.identifier, true);
+    enableMixerMidiInputs();
+    midiDevices_ = juce::MidiDeviceListConnection::make([this] { enableMixerMidiInputs(); });
     deviceManager_.addAudioCallback(this);
     deviceManager_.addMidiInputDeviceCallback({}, this);
     deviceManager_.addChangeListener(this);
@@ -239,12 +237,16 @@ void MainComponent::handleIncomingMidiMessage(juce::MidiInput* source, const juc
     if (message.isMidiClock() || message.isActiveSense())
         return;
 
-    const auto line = juce::Time::getCurrentTime().formatted("%H:%M:%S") + "  " +
-                      (source != nullptr ? source->getName() : juce::String("?")) + "  " +
-                      juce::String::toHexString(message.getRawData(), message.getRawDataSize()) + "  " +
-                      message.getDescription();
-    const juce::ScopedLock lock(midiLock_);
-    pendingMidi_.add(line);
+    if (const auto* profile = source != nullptr ? findMixerProfile(source->getName().toStdString()) : nullptr;
+        profile != nullptr && message.getRawDataSize() == 3)
+    {
+        const auto* raw = message.getRawData();
+        const juce::ScopedLock lock(midiLock_);
+        if (pendingMixerMidi_.size() < kMaxPendingMixerMidi) // if the UI stalls, drop rather than grow
+            pendingMixerMidi_.push_back({profile, {raw[0], raw[1], raw[2]}});
+    }
+
+    midiMonitor_.add(source != nullptr ? source->getName() : juce::String("?"), message);
 }
 
 // --- Updates ----------------------------------------------------------------
@@ -292,18 +294,28 @@ void MainComponent::timerCallback()
     engine_.collectGarbage();
     collectGlitches();
 
-    juce::StringArray incoming;
+    midiMonitor_.update();
+    std::vector<MixerMidi> mixerMidi;
     {
         const juce::ScopedLock lock(midiLock_);
-        incoming.swapWith(pendingMidi_);
+        mixerMidi.swap(pendingMixerMidi_);
     }
-    if (!incoming.isEmpty())
+    for (const auto& m : mixerMidi)
+        if (hardwareMixer_ && &hardwareMixer_->profile() == m.profile)
+            hardwareMixer_->handle(m.data.data(), m.data.size());
+    if (hardwareMixer_ && engine_.outputMode() == OutputMode::DirectOut)
     {
-        midiLines_.addArray(incoming);
-        if (midiLines_.size() > kMidiLogLines)
-            midiLines_.removeRange(0, midiLines_.size() - kMidiLogLines);
-        midiLog_.setText(midiLines_.joinIntoString("\n"), false);
-        midiLog_.moveCaretToEnd();
+        std::array<int, kMaxDecks> pairs{};
+        for (int d = 0; d < kMaxDecks; ++d)
+        {
+            const int first = engine_.deckOutput(d);
+            pairs[static_cast<size_t>(d)] = first == Engine::kNoOutput ? -1 : first / 2;
+        }
+        mixer_.showHardware(&*hardwareMixer_, pairs);
+    }
+    else
+    {
+        mixer_.showHardware(nullptr, {});
     }
 }
 
@@ -393,15 +405,38 @@ std::vector<MainComponent::OutputPair> MainComponent::outputPairs()
     return pairs;
 }
 
+void MainComponent::enableMixerMidiInputs()
+{
+    for (const auto& input : juce::MidiInput::getAvailableDevices())
+        if (findMixerProfile(input.name.toStdString()) != nullptr &&
+            !deviceManager_.isMidiInputDeviceEnabled(input.identifier))
+            deviceManager_.setMidiInputDeviceEnabled(input.identifier, true);
+}
+
+void MainComponent::updateHardwareMixer()
+{
+    auto* device = deviceManager_.getCurrentAudioDevice();
+    const auto* profile = device != nullptr ? findMixerProfile(device->getName().toStdString()) : nullptr;
+    if (profile == nullptr)
+        hardwareMixer_.reset();
+    else if (!hardwareMixer_ || &hardwareMixer_->profile() != profile)
+        hardwareMixer_.emplace(*profile); // positions arrive as controls move, or with a snapshot
+}
+
 void MainComponent::updateDeviceInfo()
 {
     driverDropouts_.watch(deviceManager_.getCurrentAudioDevice());
     lastDropouts_ = driverDropouts_.count();
+    updateHardwareMixer();
     if (auto* device = deviceManager_.getCurrentAudioDevice())
     {
         const auto active = device->getActiveOutputChannels();
-        deviceLabel_.setText(device->getName() + "  " + juce::String(device->getCurrentSampleRate() / 1000.0, 1) +
-                                 " kHz, " + juce::String(device->getCurrentBufferSizeSamples()) + " samples, " +
+        const double rate = device->getCurrentSampleRate();
+        // What we play is heard this much later (JUCE counts the buffer, driver and device).
+        const double latencyMs = rate > 0.0 ? 1000.0 * device->getOutputLatencyInSamples() / rate : 0.0;
+        deviceLabel_.setText(device->getName() + "  " + juce::String(rate / 1000.0, 1) + " kHz, " +
+                                 juce::String(device->getCurrentBufferSizeSamples()) + " samples (" +
+                                 juce::String(juce::roundToInt(latencyMs)) + " ms out), " +
                                  juce::String(active.countNumberOfSetBits()) + " of " +
                                  juce::String(device->getOutputChannelNames().size()) + " outputs on",
                              juce::dontSendNotification);

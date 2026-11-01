@@ -39,7 +39,15 @@
 
 - DJM-900NXS2 emulation: isolator curves and the Color FX (Space, Dub Echo, Sweep, Filter),
   with a COLOR knob per channel.
-- Record mixer moves (faders, EQ, FX) over MIDI into the automation.
+- Record mixer moves (faders, EQ, FX) over MIDI into the automation. The DJM-900SRT is followed
+  already (`core/HardwareMixer`, shown as blue marks on the strips in direct out). Still to do:
+  - Arm recording; start from the mixer's state (snapshot: hold START/STOP), place each move at the
+    playhead minus the output latency, replace the keypoints a gesture covers, then thin them.
+  - First fader and HI/MID/LOW; trim, COLOR and the crossfader need new controls in the model.
+  - A DJM-900NXS2 profile: run the MIDI probe on it for its map.
+- Record what the mixer sends back over USB (MIX/REC OUT or post-fader channels, chosen in the
+  DJM Setup app) as a reference take on the timeline, to compare with the internal mix and check
+  the emulation. Needs the input channels opened (the microphone permission is declared).
 - Export the mix to an audio file (WAV, AIFF, FLAC).
 - Sign and notarise the app so it opens without the security warning.
 

@@ -4,12 +4,14 @@
 #include "app/Display.h"
 #include "app/LevelMeter.h"
 #include "core/Document.h"
+#include "core/HardwareMixer.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace vmp
 {
@@ -27,7 +29,19 @@ public:
     void show(Id clip, double playhead, const juce::String& title, const juce::String& key);
     LevelMeter& meter() { return meter_; }
 
+    // Where this deck's audio goes on a hardware mixer (direct out) and that channel's control
+    // positions, drawn as markers beside ours.
+    struct HardwareView
+    {
+        juce::String route, tooltip;
+        bool warning = false; // the deck can't be heard on the mixer
+        std::optional<double> fader, high, mid, low;
+        bool operator==(const HardwareView&) const = default;
+    };
+    void showHardware(const std::optional<HardwareView>& view);
+
     void paint(juce::Graphics& g) override;
+    void paintOverChildren(juce::Graphics& g) override;
     void resized() override;
 
 private:
@@ -38,7 +52,8 @@ private:
     std::function<double()> playhead_;
     Id clip_ = 0;
 
-    juce::Label deckLabel_, title_, key_;
+    juce::Label deckLabel_, title_, key_, routeLabel_;
+    std::optional<HardwareView> hardware_;
     juce::Slider pitch_, volume_, high_, mid_, low_;
     juce::Label pitchLabel_, volumeLabel_, highLabel_, midLabel_, lowLabel_;
     LevelMeter meter_;
@@ -57,6 +72,8 @@ public:
     // is no internal mix (direct out).
     void pushLevels(const std::array<StereoPeak, kMaxDecks>& decks, StereoPeak mix, bool mixActive,
                     double elapsedSeconds);
+    // The hardware mixer's state, with each deck's output pair (-1: none), or nullptr to hide it.
+    void showHardware(const HardwareMixer* mixer, const std::array<int, kMaxDecks>& deckPairs);
 
     // Width needed for this many decks.
     static int preferredWidth(int numDecks);

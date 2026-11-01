@@ -14,6 +14,8 @@ constexpr int kMixMeterWidth = 26;
 constexpr int kMeterWidth = 11; // two 5 px bars
 
 const juce::Colour kAutomatedColour{0xffffb340};
+const juce::Colour kHardwareColour{0xff4fc3f7};
+const juce::Colour kWarningColour{0xffff6b5b};
 
 juce::String gainText(float gain)
 {
@@ -33,6 +35,10 @@ ChannelStrip::ChannelStrip(int deck, SetDocument& document, std::function<double
     deckLabel_.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(deckLabel_);
     addAndMakeVisible(meter_);
+    routeLabel_.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+    routeLabel_.setJustificationType(juce::Justification::centred);
+    routeLabel_.setMinimumHorizontalScale(0.6f);
+    addChildComponent(routeLabel_);
     for (auto* label : {&title_, &key_})
     {
         label->setFont(juce::FontOptions(11.0f));
@@ -153,6 +159,60 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
     showValue(low_, Param::Low, valueAt(*clip, Param::Low, frame));
 }
 
+void ChannelStrip::showHardware(const std::optional<HardwareView>& view)
+{
+    if (view == hardware_)
+        return;
+    const bool layoutChanged = view.has_value() != hardware_.has_value();
+    hardware_ = view;
+    if (view)
+    {
+        routeLabel_.setText(view->route, juce::dontSendNotification);
+        routeLabel_.setTooltip(view->tooltip);
+        routeLabel_.setColour(juce::Label::textColourId, view->warning ? kWarningColour : kHardwareColour);
+    }
+    routeLabel_.setVisible(view.has_value());
+    if (layoutChanged)
+        resized();
+    repaint();
+}
+
+void ChannelStrip::paintOverChildren(juce::Graphics& g)
+{
+    if (!hardware_)
+        return;
+    g.setColour(kHardwareColour);
+
+    // A notch either side of the fader track.
+    if (hardware_->fader)
+    {
+        const auto bounds = volume_.getBounds();
+        const float y = static_cast<float>(bounds.getY()) +
+                        static_cast<float>(volume_.getPositionOfValue(*hardware_->fader));
+        const float centre = static_cast<float>(bounds.getCentreX());
+        g.fillRect(juce::Rectangle<float>(centre - 14.0f, y - 1.0f, 7.0f, 2.0f));
+        g.fillRect(juce::Rectangle<float>(centre + 7.0f, y - 1.0f, 7.0f, 2.0f));
+    }
+
+    // A tick across the knob's arc, placed as LookAndFeel_V4 draws it.
+    for (auto [knob, value] : {std::pair{&high_, hardware_->high}, std::pair{&mid_, hardware_->mid},
+                               std::pair{&low_, hardware_->low}})
+    {
+        if (!value)
+            continue;
+        const auto bounds = knob->getBounds().toFloat().reduced(10.0f);
+        const float radius = std::min(bounds.getWidth(), bounds.getHeight()) / 2.0f;
+        const float lineWidth = std::min(8.0f, radius * 0.5f);
+        const auto rotary = knob->getRotaryParameters();
+        const float angle = rotary.startAngleRadians +
+                            static_cast<float>(*value) * (rotary.endAngleRadians - rotary.startAngleRadians);
+        const auto centre = bounds.getCentre();
+        const auto inner = centre.getPointOnCircumference(radius - lineWidth - 2.0f, angle);
+        const auto outer = centre.getPointOnCircumference(radius + 3.0f, angle);
+        g.drawLine({inner, outer}, 2.0f);
+    }
+}
+
 void ChannelStrip::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff23262b));
@@ -164,6 +224,8 @@ void ChannelStrip::resized()
 {
     auto area = getLocalBounds().reduced(4);
     deckLabel_.setBounds(area.removeFromTop(18));
+    if (hardware_)
+        routeLabel_.setBounds(area.removeFromTop(14));
     title_.setBounds(area.removeFromTop(16));
     key_.setBounds(area.removeFromTop(16));
     area.removeFromTop(4);
@@ -213,6 +275,67 @@ void MixerPanel::pushLevels(const std::array<StereoPeak, kMaxDecks>& decks, Ster
         strips_[d]->meter().push(decks[d], elapsedSeconds);
     mixMeter_.setActive(mixActive);
     mixMeter_.push(mix, elapsedSeconds);
+}
+
+void MixerPanel::showHardware(const HardwareMixer* mixer, const std::array<int, kMaxDecks>& deckPairs)
+{
+    for (size_t d = 0; d < kMaxDecks; ++d)
+    {
+        if (mixer == nullptr)
+        {
+            strips_[d]->showHardware(std::nullopt);
+            continue;
+        }
+
+        ChannelStrip::HardwareView view;
+        const juce::String mixerName(mixer->profile().name);
+        const int pair = deckPairs[d];
+        const int channel = pair >= 0 ? mixer->channelForUsbPair(pair) : -1;
+        if (pair < 0)
+        {
+            view.route = "not routed";
+            view.warning = true;
+            view.tooltip = "This deck isn't sent to an output. Choose one in the Audio menu.";
+        }
+        else if (channel < 0)
+        {
+            view.route = "no channel";
+            view.warning = true;
+            view.tooltip = "Output " + juce::String(2 * pair + 1) + "/" + juce::String(2 * pair + 2) +
+                           " doesn't reach a channel on the " + mixerName + ".";
+        }
+        else
+        {
+            const auto& state = mixer->channel(channel);
+            const juce::String name = "CH" + juce::String(channel + 1);
+            view.fader = state.fader;
+            view.high = state.high;
+            view.mid = state.mid;
+            view.low = state.low;
+            if (state.input == MixerInput::Usb)
+            {
+                view.route = "> " + name + " USB";
+                view.tooltip = "Plays on " + name + " of the " + mixerName +
+                               ". The blue marks show where its controls are.";
+            }
+            else if (state.input == MixerInput::Unknown)
+            {
+                view.route = "> " + name;
+                view.tooltip = "Plays on " + name + " of the " + mixerName + " if its input selector is on USB.";
+            }
+            else
+            {
+                view.route = name + " on " + mixerInputName(state.input);
+                view.warning = true;
+                view.tooltip = "Plays on " + name + " of the " + mixerName +
+                               ", but its input selector isn't on USB: you won't hear it.";
+            }
+            if (!state.fader && !state.high)
+                view.tooltip << " To see its controls here, turn on the mixer's MIDI (ON/OFF button) and hold "
+                                "START/STOP for a second.";
+        }
+        strips_[d]->showHardware(view);
+    }
 }
 
 int MixerPanel::preferredWidth(int numDecks)
