@@ -61,6 +61,6 @@ DJM-900NXS2, and generic Core Audio devices).
 ## Building on this machine
 - Use `/opt/homebrew/bin/cmake` and `ninja`. The ones in `/usr/local/bin` are Intel builds that
   would run clang under Rosetta.
-- The Command Line Tools' MacOSX27 SDK is newer than its linker, and Xcode's license hasn't been
-  accepted. Use the `local-debug` preset in `CMakeUserPresets.json` (SDKROOT = MacOSX26.sdk):
-  `cmake --preset local-debug && cmake --build --preset local-debug && ./build/debug/vmp_tests`
+- Active toolchain is Xcode 27.2 (`xcode-select`). The standalone Command Line Tools have a
+  MacOSX27 SDK their linker can't read; don't switch back to them.
+- `cmake --preset debug && cmake --build --preset debug && ctest --preset debug`
