@@ -29,6 +29,7 @@ from audio files, constrained to what a Technics SL-1200MK2 can actually do.
 DJM-900NXS2, and generic Core Audio devices).
 
 ## Confirmed requirements
+- Use cases and the modes they imply (planning, practice, mixing ahead): `docs/USE_CASES.md`.
 - Goal: plan almost everything the user would do live on their real setup.
 - Two output modes: internal mix (laptop, stereo out) and direct out (each deck dry to its own
   channel pair into a hardware mixer; mixer EQ/volume/FX recorded as automation over USB MIDI).

@@ -26,14 +26,15 @@
 
 ## Cueing
 
-- **A cue playhead for listening ahead.** A second, separate playhead that plays into the
-  headphones while the main playhead plays the mix, so you can audition the next transition
-  without stopping. Needs:
-  - A headphone output: a second stereo pair on the audio interface (or the mixer's cue
-    channel in direct-out mode).
-  - Its own transport and position on the timeline, drawn differently from the main playhead.
+- **The cuehead: a second position for preparing ahead.** Independent of the playhead and usually
+  ahead of it; a second person (or the DJ between transitions) lines up and auditions what comes
+  next while the playhead plays the set to the mixer. See `docs/USE_CASES.md`. Needs:
+  - A second engine rendering the same schedule (internal mix) to its own device, typically the
+    laptop's built-in output.
+  - Its own transport and position on the timeline, drawn differently from the playhead.
+  - The prefetcher covering both positions, with the playhead taking priority.
+  - Edits locked just ahead of the playhead.
   - A choice of what it plays: just the incoming deck, or the whole mix at that point.
-  - Optionally a cue/master blend for the headphones, as on a DJ mixer.
 
 ## Already planned
 
