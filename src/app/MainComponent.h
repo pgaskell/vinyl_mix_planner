@@ -16,6 +16,7 @@
 #include "app/TimelineView.h"
 #include "core/Document.h"
 #include "core/HardwareMixer.h"
+#include "core/MixRecorder.h"
 #include "engine/Engine.h"
 #include "engine/Prefetcher.h"
 
@@ -82,6 +83,22 @@ private:
     // In the internal mix, the hardware mixer's faders, trims, EQ and COLOR play the decks (not saved in the set).
     bool controlsInternalMix() const;
     void applyHardwareControls();
+    // Mixer moves while playing (MixRecorder): where they're placed in time, ending passes when
+    // playback stops, jumps or a clip ends, and writing them into the set (Record and Trim modes).
+    bool recordMove(int deck, Id clip, Param param, double value);
+    double heardSeconds() const { return engine_.playheadSeconds() - outputLatency_; }
+    void updateRecording();
+    // Writes the finished passes into the set (Latch, Trim) or drops them (Override).
+    void finishPasses();
+    // The mode taking hold of a control uses: the chosen one, except that in Trim a control already
+    // holding a position carries on as it is (trimming it would jump back to the set's curve).
+    AutomationMode modeFor(int deck, Param param) const;
+    void setAutomationMode(AutomationMode mode);
+    void setLaneHeight(TimelineView::LaneHeight height);
+    // Help > Report a Problem: asks what happened, then saves a zip for the tester to send.
+    void reportProblem();
+    juce::String reportInfo() const;
+    std::unique_ptr<juce::AlertWindow> reportWindow_;
 
     std::optional<double> addFile(const juce::File& file, int deck, double start);
     void addFileAtPlayhead(const juce::File& file);
@@ -156,6 +173,7 @@ private:
         stopButton_{Icon::Stop}, forwardButton_{Icon::FastForward}, nextMixButton_{Icon::NextMix};
     juce::ComboBox beatJumpBox_;
     double playStartedAt_ = 0.0; // where Stop returns to
+    juce::TextButton controlModeButton_; // says which AutomationMode it's in; a click moves to the next
     juce::Label timeLabel_;
     IconButton zoomOutButton_{Icon::ZoomOut}, zoomInButton_{Icon::ZoomIn};
     juce::TextButton zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
@@ -187,6 +205,12 @@ private:
     // The hardware mixer the audio device is (direct out), followed from its MIDI.
     std::optional<HardwareMixer> hardwareMixer_;
     bool hardwareControl_ = true;
+    MixRecorder recorder_;
+    AutomationMode controlMode_ = AutomationMode::Latch;
+    double lastHeard_ = 0.0;     // heardSeconds() at the last UI tick
+    bool wasRecording_ = false;
+    static constexpr double kSettleSeconds = 2.0; // moves this far behind are thinned while recording
+    double outputLatency_ = 0.0; // seconds from rendering a block to hearing it
     juce::MidiDeviceListConnection midiDevices_;
 };
 

@@ -2,6 +2,7 @@
 
 #include "core/Edits.h"
 #include "engine/Engine.h"
+#include "engine/MixerChannel.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -15,6 +16,8 @@ using Catch::Approx;
 namespace
 {
 constexpr double kRate = 48000.0;
+// What the internal mix does to a record with every control at its default: the trim's headroom.
+const float kDefaultGain = MixerChannel::trimGain(0.5);
 constexpr int kBlock = 512;
 
 // A set plus the decoded audio for each of its tracks.
@@ -126,7 +129,7 @@ TEST_CASE("Internal mix applies each clip's fader and EQ")
     {
         f.publish();
         f.engine.play();
-        CHECK(peak(slice(f.run(2.0)[0], 1.0, 2.0, kRate)) == Approx(1.0f).epsilon(0.05));
+        CHECK(peak(slice(f.run(2.0)[0], 1.0, 2.0, kRate)) == Approx(kDefaultGain).epsilon(0.05));
     }
     SECTION("fader down and low kill silence the mix")
     {
@@ -149,7 +152,7 @@ TEST_CASE("Live controls replace a deck's fader and EQ in the internal mix until
     CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.01f);
 
     f.engine.setLiveControl(0, Param::Volume, 1.0);
-    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f).epsilon(0.05)); // the tone's own level
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * kDefaultGain).epsilon(0.05)); // the tone at the default trim
 
     f.engine.setLiveControl(0, Param::Low, 0.0); // the low kill takes out the 80 Hz tone
     CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.025f);
@@ -159,8 +162,8 @@ TEST_CASE("Live controls replace a deck's fader and EQ in the internal mix until
     CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.01f);
     f.engine.setLiveControl(0, Param::Color, std::nullopt);
 
-    f.engine.setLiveTrim(0, 0.0); // -9 dB
-    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * 0.3548f).epsilon(0.05));
+    f.engine.setLiveTrim(0, 0.0); // -20 dB
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * 0.1f).epsilon(0.05));
 
     f.engine.setLiveControl(0, Param::Volume, std::nullopt);
     f.engine.setLiveTrim(0, std::nullopt);
@@ -172,11 +175,11 @@ TEST_CASE("A clip's trim sets its level before the EQ and fader")
 {
     Fixture f;
     const Id a = f.addClip(makeSine(1000.0, kRate, 10.0), 0, 0.0);
-    edit::setClipMixer(f.set, a, {1.0, 0.5, 0.5, 0.5, 0.75}); // +4.5 dB
+    edit::setClipMixer(f.set, a, {1.0, 0.5, 0.5, 0.5, 0.75}); // -8 dB
     f.engine.setOutputMode(OutputMode::InternalMix);
     f.publish();
     f.engine.play();
-    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * 1.6788f).epsilon(0.05));
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * 0.3981f).epsilon(0.05));
 }
 
 TEST_CASE("Direct out sends each deck dry to its own pair")
@@ -322,8 +325,8 @@ TEST_CASE("Blocks larger than announced are rendered in chunks")
     float* ptrs[] = {left.data(), right.data()};
     for (int i = 0; i < 10; ++i)
         f.engine.render(ptrs, 2, 3000);
-    CHECK(left[1500] == Approx(0.25f).margin(1e-3));
-    CHECK(left.back() == Approx(0.25f).margin(1e-3));
+    CHECK(left[1500] == Approx(0.25f * kDefaultGain).margin(1e-3));
+    CHECK(left.back() == Approx(0.25f * kDefaultGain).margin(1e-3));
 }
 
 TEST_CASE("Volume automation fades a deck in the internal mix")
@@ -337,8 +340,9 @@ TEST_CASE("Volume automation fades a deck in the internal mix")
     f.engine.play();
 
     const auto out = f.run(2.5);
-    CHECK(out[0][static_cast<size_t>(0.9 * kRate)] == Approx(0.25f).margin(0.002f));
-    CHECK(out[0][static_cast<size_t>(1.5 * kRate)] == Approx(0.25f * MixerChannel::faderGain(0.5)).margin(0.01f));
+    CHECK(out[0][static_cast<size_t>(0.9 * kRate)] == Approx(0.25f * kDefaultGain).margin(0.002f));
+    CHECK(out[0][static_cast<size_t>(1.5 * kRate)] ==
+          Approx(0.25f * kDefaultGain * MixerChannel::faderGain(0.5)).margin(0.01f));
     CHECK(std::abs(out[0][static_cast<size_t>(2.2 * kRate)]) < 0.001f);
 }
 
@@ -353,14 +357,15 @@ TEST_CASE("Meters report each side of each deck and of the mix, then start again
     f.publish();
     f.engine.play();
     f.run(0.5);
-    // The resampler rings a few percent at the instant the records start.
+    // The resampler rings a few percent at the instant the records start. Deck meters are after the
+    // channel, so they include the trim.
     const auto deck0 = f.engine.takeDeckPeak(0), deck1 = f.engine.takeDeckPeak(1), mix = f.engine.takeMasterPeak();
-    CHECK(deck0.left == Approx(0.25f).epsilon(0.08));
-    CHECK(deck0.right == Approx(0.25f).epsilon(0.08));
-    CHECK(deck1.left == Approx(0.1f).epsilon(0.08));
-    CHECK(deck1.right == Approx(0.5f).epsilon(0.08));
-    CHECK(mix.left == Approx(0.35f).epsilon(0.08));
-    CHECK(mix.right == Approx(0.25f).epsilon(0.08)); // 0.25 - 0.5
+    CHECK(deck0.left == Approx(0.25f * kDefaultGain).epsilon(0.08));
+    CHECK(deck0.right == Approx(0.25f * kDefaultGain).epsilon(0.08));
+    CHECK(deck1.left == Approx(0.1f * kDefaultGain).epsilon(0.08));
+    CHECK(deck1.right == Approx(0.5f * kDefaultGain).epsilon(0.08));
+    CHECK(mix.left == Approx(0.35f * kDefaultGain).epsilon(0.08));
+    CHECK(mix.right == Approx(0.25f * kDefaultGain).epsilon(0.08)); // 0.25 - 0.5
     CHECK(f.engine.takeDeckPeak(0).left == 0.0f);
     CHECK(f.engine.takeMasterPeak().right == 0.0f);
 

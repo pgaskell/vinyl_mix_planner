@@ -61,7 +61,17 @@ DJM-900NXS2, and generic Core Audio devices).
   point at the needle drop; keypoints (anchored to source frames, i.e. the music) follow, linear between
   points; keypoints before the in-point are ignored. Trimming the start carries automated values into the
   starting values (pitch may become fractional steps). Pitch slides are linear in time (PitchCurve).
-  A mixer control with keypoints writes a keypoint at the playhead (touch-style).
+  Stopped, moving a mixer control edits the set (`edit::setParamAt`: the starting value, or a keypoint at
+  the playhead if it has keypoints). Playing, moves on the clip being heard go to `MixRecorder` instead
+  (latched until stop or the clip ends; the engine plays the latched values through its live controls).
+  The mode the control was taken hold of in (`AutomationMode`; each pass keeps its own, so switching modes
+  while playing never changes what's heard) decides what happens: Override drops the pass (practice), Latch
+  writes the positions until playback stops, jumps or the clip ends (`edit::writeRecordedPass`, thinned),
+  Trim writes the existing curve adjusted by the amounts from the first move until the pass ends
+  (`edit::writeTrimmedPass`), Trim All adjusts the whole clip's curve (starting value and every keypoint)
+  by the last amount (`edit::trimAutomation`); both use `MixerChannel::trimmed` (volume and EQ offset in dB,
+  so a closed fader and a kill stay put; COLOR's distance from centre multiplied) and the engine plays them
+  via setLiveScale.
 - `ClipTiming` is the only place that maps timeline <-> source; UI and engine must both use it.
 - All set changes go through `SetDocument::edit` with an `edit::` function (undo = whole-set snapshots;
   wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.

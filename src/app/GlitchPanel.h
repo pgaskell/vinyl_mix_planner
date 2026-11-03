@@ -26,6 +26,8 @@ public:
     void clear();
 
     int count() const { return static_cast<int>(entries_.size()) + static_cast<int>(lost_); }
+    // The list, one glitch per line, for a problem report.
+    juce::String asText() const;
     // Timeline positions, for marking on the ruler.
     std::vector<double> positions() const;
 
@@ -52,6 +54,7 @@ private:
     juce::Label summary_;
     std::vector<Entry> entries_;
     uint32_t lost_ = 0;
+    int logged_ = 0; // glitches written to the log this run
 };
 
 // The toolbar light: grey when nothing has gone wrong, flashes red on each glitch and stays dim

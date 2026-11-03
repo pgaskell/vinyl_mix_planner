@@ -143,3 +143,35 @@ TEST_CASE("Version 2 sets keep their pitch exactly, automation included, in toda
     const auto again = setFromJson(setToJson(set));
     CHECK(again.clips[0].pitchSteps == Approx(7.5));
 }
+
+TEST_CASE("The automation shown on each lane is saved with the set")
+{
+    Set set;
+    SetView view;
+    view.automation[0][static_cast<size_t>(Param::Volume)] = false;
+    view.automation[0][static_cast<size_t>(Param::Low)] = true;
+    view.automation[3][static_cast<size_t>(Param::Color)] = true;
+    const auto json = setToJson(set, &view);
+
+    SetView loaded;
+    setFromJson(json, &loaded);
+    CHECK(loaded == view);
+
+    // Without one (older sets, or saved without a view), the defaults: volume shown.
+    SetView defaults;
+    defaults.automation[1] = {};
+    setFromJson(setToJson(set), &defaults);
+    CHECK(defaults == SetView{});
+    CHECK(SetView{}.automation[2][static_cast<size_t>(Param::Volume)]);
+    CHECK_FALSE(SetView{}.automation[2][static_cast<size_t>(Param::Low)]);
+
+    // A control this version doesn't know is skipped: it's only the view.
+    auto edited = json;
+    const auto at = edited.find("\"color\"");
+    REQUIRE(at != std::string::npos);
+    edited.replace(at, 7, "\"wobble\"");
+    SetView partial;
+    setFromJson(edited, &partial);
+    CHECK_FALSE(partial.automation[3][static_cast<size_t>(Param::Color)]);
+    CHECK(partial.automation[0][static_cast<size_t>(Param::Low)]);
+}

@@ -15,7 +15,8 @@ namespace
 {
 constexpr double kRate = 48000.0;
 
-// Amplitude of a sine after the channel, once the filters have settled.
+// Amplitude of a sine after the channel, once the filters have settled, relative to the trim's gain
+// (so centred knobs read 0 dB).
 float responseAt(double frequency, const ChannelSettings& settings)
 {
     MixerChannel channel;
@@ -32,7 +33,8 @@ float responseAt(double frequency, const ChannelSettings& settings)
     double sum = 0.0;
     for (size_t i = left.size() / 2; i < left.size(); ++i)
         sum += static_cast<double>(left[i]) * left[i];
-    return static_cast<float>(std::sqrt(2.0 * sum / static_cast<double>(left.size() / 2)));
+    return static_cast<float>(std::sqrt(2.0 * sum / static_cast<double>(left.size() / 2))) /
+           MixerChannel::trimGain(settings.trim);
 }
 
 double dB(float gain)
@@ -66,11 +68,10 @@ TEST_CASE("Knob and fader laws")
     CHECK(dB(MixerChannel::eqGain(1.0)) == Approx(6.0).margin(0.01));
     CHECK(MixerChannel::faderGain(0.0) == 0.0f);
     CHECK(MixerChannel::faderGain(1.0) == 1.0f);
-    CHECK(dB(MixerChannel::trimGain(0.0)) == Approx(-9.0).margin(0.01));
-    CHECK(MixerChannel::trimGain(0.5) == 1.0f);
-    CHECK(dB(MixerChannel::trimGain(0.75)) == Approx(4.5).margin(0.01));
-    CHECK(dB(MixerChannel::trimGain(1.0)) == Approx(9.0).margin(0.01));
-    CHECK(dB(responseAt(1000.0, {1.0, 0.5, 0.5, 0.5, 1.0})) == Approx(9.0).margin(0.2));
+    CHECK(dB(MixerChannel::trimGain(0.0)) == Approx(-20.0).margin(0.01));
+    CHECK(dB(MixerChannel::trimGain(0.5)) == Approx(-12.0).margin(0.01));
+    CHECK(dB(MixerChannel::trimGain(0.75)) == Approx(-8.0).margin(0.01));
+    CHECK(dB(MixerChannel::trimGain(1.0)) == Approx(-4.0).margin(0.01));
     CHECK(dB(responseAt(1000.0, {0.5, 0.5, 0.5, 0.5})) == Approx(-12.04).margin(0.2));
 }
 

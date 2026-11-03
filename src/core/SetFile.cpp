@@ -64,7 +64,7 @@ PressedSpeed pressedFromString(const std::string& s)
 }
 } // namespace
 
-std::string setToJson(const Set& set)
+std::string setToJson(const Set& set, const SetView* view)
 {
     json tracks = json::array();
     for (const auto& t : set.tracks)
@@ -115,18 +115,32 @@ std::string setToJson(const Set& set)
                            {"color", c.mixer.color}}}});
     }
 
-    const json doc = {{"format", kFormatName},
-                      {"version", kSetFormatVersion},
-                      {"pitchStepPercent", kPitchStepPercent},
-                      {"name", set.name},
-                      {"decks", set.numDecks},
-                      {"nextId", set.nextId},
-                      {"tracks", tracks},
-                      {"clips", clips}};
+    json doc = {{"format", kFormatName},
+                {"version", kSetFormatVersion},
+                {"pitchStepPercent", kPitchStepPercent},
+                {"name", set.name},
+                {"decks", set.numDecks},
+                {"nextId", set.nextId},
+                {"tracks", tracks},
+                {"clips", clips}};
+    if (view != nullptr)
+    {
+        // Per deck, the names of the controls whose automation is shown.
+        json decks = json::array();
+        for (const auto& deck : view->automation)
+        {
+            json shown = json::array();
+            for (int p = 0; p < kNumParams; ++p)
+                if (deck[static_cast<size_t>(p)])
+                    shown.push_back(paramKey(static_cast<Param>(p)));
+            decks.push_back(shown);
+        }
+        doc["view"] = {{"automation", decks}};
+    }
     return doc.dump(2);
 }
 
-Set setFromJson(const std::string& text)
+Set setFromJson(const std::string& text, SetView* view)
 {
     json doc;
     try
@@ -212,6 +226,24 @@ Set setFromJson(const std::string& text)
             set.clips.push_back(std::move(clip));
         }
 
+        if (view != nullptr)
+        {
+            *view = SetView{};
+            if (doc.contains("view") && doc["view"].contains("automation"))
+            {
+                // Unknown names (from a newer version) are skipped rather than refused: it's only the view.
+                const auto& decks = doc["view"]["automation"];
+                for (size_t d = 0; d < std::min(decks.size(), static_cast<size_t>(kMaxDecks)); ++d)
+                {
+                    view->automation[d] = {};
+                    for (const auto& name : decks[d])
+                        for (int p = 0; p < kNumParams; ++p)
+                            if (name.is_string() && name.get<std::string>() == paramKey(static_cast<Param>(p)))
+                                view->automation[d][static_cast<size_t>(p)] = true;
+                }
+            }
+        }
+
         // Ids must stay unique when new items are added.
         for (const auto& t : set.tracks)
             set.nextId = std::max(set.nextId, t.id + 1);
@@ -226,9 +258,9 @@ Set setFromJson(const std::string& text)
     }
 }
 
-void saveSet(const Set& set, const std::filesystem::path& path)
+void saveSet(const Set& set, const std::filesystem::path& path, const SetView* view)
 {
-    const std::string text = setToJson(set);
+    const std::string text = setToJson(set, view);
     auto temp = path;
     temp += ".saving";
     {
@@ -252,14 +284,14 @@ void saveSet(const Set& set, const std::filesystem::path& path)
     }
 }
 
-Set loadSet(const std::filesystem::path& path)
+Set loadSet(const std::filesystem::path& path, SetView* view)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in)
         throw SetFileError("could not open " + path.string());
     std::ostringstream text;
     text << in.rdbuf();
-    return setFromJson(text.str());
+    return setFromJson(text.str(), view);
 }
 
 } // namespace vmp

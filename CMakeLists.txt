@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Big Sur is the oldest macOS that runs on Apple Silicon.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
-project(VinylMixPlanner VERSION 0.4.0 LANGUAGES C CXX)
+project(VinylMixPlanner VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,7 @@ add_library(vmp_core STATIC
     src/core/Document.cpp
     src/core/Edits.cpp
     src/core/HardwareMixer.cpp
+    src/core/MixRecorder.cpp
     src/core/Musical.cpp
     src/core/PitchCurve.cpp
     src/core/Set.cpp
@@ -76,6 +77,7 @@ target_sources(VinylMixPlanner PRIVATE
     src/app/AnalysisCache.cpp
     src/app/AudioPool.cpp
     src/app/DriverDropouts.cpp
+    src/app/Faders.cpp
     src/app/GlitchPanel.cpp
     src/app/IconButton.cpp
     src/app/Inspector.cpp
@@ -87,6 +89,7 @@ target_sources(VinylMixPlanner PRIVATE
     src/app/MidiMonitor.cpp
     src/app/MixExporter.cpp
     src/app/MixerPanel.cpp
+    src/app/ProblemReport.cpp
     src/app/TimelineView.cpp)
 
 target_compile_definitions(VinylMixPlanner PRIVATE
@@ -127,6 +130,7 @@ if(VMP_BUILD_TESTS)
         tests/MusicalTests.cpp
         tests/PitchCurveTests.cpp
         tests/PitchTests.cpp
+        tests/RecordingTests.cpp
         tests/SetFileTests.cpp
         tests/SetTests.cpp
         tests/StreamingTests.cpp

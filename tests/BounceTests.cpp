@@ -4,6 +4,7 @@
 #include "core/StreamedAudio.h"
 #include "engine/Bounce.h"
 #include "engine/Engine.h"
+#include "engine/MixerChannel.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -126,7 +127,7 @@ TEST_CASE("A bounce of streamed audio matches live playback, and leaves the live
     for (size_t i = 0; i < expected.size(); ++i)
         worst = std::max(worst, std::abs(expected[i] - bounced.left[i]));
     CHECK(worst < 1e-4f); // the same up to rounding: live renders in smaller blocks
-    CHECK(std::abs(bounced.left[1]) > 0.01f); // no fade-in at the start
+    CHECK(std::abs(bounced.left[1]) > 0.01f * MixerChannel::trimGain(0.5)); // no fade-in at the start
     // The largest sample written (here the resampler's ringing at the needle drop, a little over the
     // sine's 0.5).
     float largest = 0.0f;
@@ -144,10 +145,10 @@ TEST_CASE("A bounce of streamed audio matches live playback, and leaves the live
 TEST_CASE("A bounce reports samples past full scale")
 {
     OneClip one(makeSine(1000.0, kRate, 2.0, 0.9), 0.0);
-    edit::setClipTrim(one.set, one.clip, 1.0); // +9 dB
+    edit::setClipMixer(one.set, one.clip, {1.0, 0.5, 1.0, 0.5, 1.0}); // trim -4 dB, mid +6 dB: +2 dB
     const auto bounced = run(*one.schedule(), *bounceRange(*one.schedule()));
     CHECK(bounced.result.status == BounceResult::Status::Done);
-    CHECK(bounced.result.peak > 2.0f);
+    CHECK(bounced.result.peak > 1.05f);
     CHECK(bounced.result.clippedSamples > 0);
 }
 

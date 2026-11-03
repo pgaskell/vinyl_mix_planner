@@ -73,6 +73,9 @@ public:
     void setLiveControl(int deck, Param param, std::optional<double> position);
     // The same for the trim knob, which isn't an automated Param.
     void setLiveTrim(int deck, std::optional<double> position);
+    // A trim amount (MixerChannel::trimmed) applied to the set's value of a deck's fader, EQ or
+    // COLOR, automation included, while trimming automation. A live position takes precedence.
+    void setLiveScale(int deck, Param param, std::optional<double> amount);
 
     // Frees schedules the audio thread has finished with.
     void collectGarbage() { schedule_.collectGarbage(); }
@@ -134,6 +137,7 @@ private:
     // Volume, High, Mid, Low, Color, trim per deck; NaN when the set's value applies.
     static constexpr size_t kLiveTrim = 5;
     std::array<std::array<std::atomic<float>, 6>, kMaxDecks> liveControls_;
+    std::array<std::array<std::atomic<float>, 5>, kMaxDecks> liveScales_; // Volume..Color; NaN: none
     SpscQueue<Glitch, 256> glitches_;
     std::atomic<uint64_t> renderCounter_{0};
     std::atomic<float> peakLoad_{0.0f};

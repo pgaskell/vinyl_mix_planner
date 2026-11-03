@@ -2,7 +2,9 @@
 
 #include "app/AudioPool.h"
 #include "app/Display.h"
+#include "app/Faders.h"
 #include "core/Document.h"
+#include "core/MixRecorder.h"
 #include "engine/Engine.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -41,6 +43,22 @@ public:
     void refresh();
     // Called from the UI timer.
     void updatePlayhead();
+    // Points each deck's pitch fader at its clip (clipForDeck). Called from the UI timer.
+    void updatePitchFaders(bool playing);
+
+    // How tall the lanes are, all together: a quarter, half, three quarters or all of the height
+    // they could have.
+    enum class LaneHeight
+    {
+        Small,
+        Medium,
+        Large,
+        Full
+    };
+    LaneHeight laneHeight() const { return laneHeight_; }
+    void setLaneHeight(LaneHeight height);
+    // The lane height buttons (top left, above the deck headers) were clicked.
+    std::function<void(LaneHeight)> onLaneHeightChosen;
 
     Id selectedClip() const { return selected_; }
     void setSelectedClip(Id id);
@@ -66,6 +84,9 @@ public:
     // Spans where two or more decks play together, in time order.
     std::vector<std::pair<double, double>> mixes() const;
 
+    // Which automation each lane shows, as saved with the set.
+    std::array<std::array<bool, kNumParams>, kMaxDecks> shownAutomation() const { return shown_; }
+    void setShownAutomation(const std::array<std::array<bool, kNumParams>, kMaxDecks>& shown);
     bool showsAutomation(int deck, Param param) const;
     void setShowsAutomation(int deck, Param param, bool show);
     // Shows every control's automation on the deck, or hides them all if any is showing.
@@ -76,6 +97,9 @@ public:
 
     // Where glitches happened, marked on the ruler.
     void setGlitchMarks(std::vector<double> seconds);
+    // Mixer moves being recorded: each pass is drawn as a plain line (no keypoints) from where it
+    // began to the playhead, over the curve it replaces. Call repaint() as it grows.
+    void showRecording(const MixRecorder* recorder) { recorder_ = recorder; }
 
     // Draws the selected clip's bar lines faintly through the other decks' lanes, for lining up a
     // third or fourth record against it.
@@ -110,7 +134,9 @@ public:
     void itemDropped(const SourceDetails& details) override;
 
 private:
-    static constexpr int kHeaderWidth = 112;
+    static constexpr int kHeaderWidth = 158;
+    static constexpr int kPitchWidth = 46;      // the pitch fader, at the left of the lane header
+    static constexpr int kMinLaneHeight = 44;
     static constexpr int kRulerHeight = 26;
     static constexpr int kEdgeGrab = 6;
 
@@ -195,6 +221,9 @@ private:
     void paintBeatGuides(juce::Graphics& g);
     void paintAutomation(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
                          juce::Rectangle<int> area);
+    // The set's curve, with its keypoints.
+    void paintCurve(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
+                    juce::Rectangle<int> area);
 
     SetDocument& document_;
     AudioPool& pool_;
@@ -221,9 +250,13 @@ private:
     std::map<Id, Issue::Severity> issues_;
     std::vector<std::pair<double, double>> transitions_; // spans where two decks play
     std::vector<double> glitchMarks_;
+    const MixRecorder* recorder_ = nullptr;
 
     std::array<std::array<bool, kNumParams>, kMaxDecks> shown_{};
     std::array<std::array<juce::ToggleButton, kNumParams>, kMaxDecks> toggles_;
+    std::array<std::unique_ptr<PitchFader>, kMaxDecks> pitchFaders_;
+    LaneHeight laneHeight_ = LaneHeight::Full;
+    std::array<juce::TextButton, 4> laneHeightButtons_;
 
     Drag drag_ = Drag::None;
     Clip dragOrigin_;

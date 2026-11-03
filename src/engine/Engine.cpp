@@ -49,6 +49,8 @@ Engine::Engine() : seekRequest_(kNoSeek), clock_(steadyNanoseconds)
         deckOutputs_[i].store(static_cast<int>(i) * 2); // deck 1 -> 1/2, deck 2 -> 3/4, ...
         for (auto& control : liveControls_[i])
             control.store(std::numeric_limits<float>::quiet_NaN());
+        for (auto& scale : liveScales_[i])
+            scale.store(std::numeric_limits<float>::quiet_NaN());
     }
 }
 
@@ -71,12 +73,24 @@ void Engine::setLiveTrim(int deck, std::optional<double> position)
         position ? static_cast<float>(std::clamp(*position, 0.0, 1.0)) : std::numeric_limits<float>::quiet_NaN());
 }
 
+void Engine::setLiveScale(int deck, Param param, std::optional<double> amount)
+{
+    if (deck < 0 || deck >= kMaxDecks || param == Param::Pitch)
+        return;
+    const auto index = static_cast<size_t>(param) - static_cast<size_t>(Param::Volume);
+    liveScales_[static_cast<size_t>(deck)][index].store(amount ? static_cast<float>(*amount)
+                                                               : std::numeric_limits<float>::quiet_NaN());
+}
+
 ChannelSettings Engine::withLiveControls(ChannelSettings settings, size_t deck) const
 {
     auto take = [&](double& field, size_t index) {
         const float live = liveControls_[deck][index].load(std::memory_order_relaxed);
+        const float scale = liveScales_[deck][index].load(std::memory_order_relaxed);
         if (!std::isnan(live))
             field = live;
+        else if (!std::isnan(scale))
+            field = MixerChannel::trimmed(static_cast<Param>(static_cast<size_t>(Param::Volume) + index), field, scale);
     };
     take(settings.fader, 0);
     take(settings.high, 1);

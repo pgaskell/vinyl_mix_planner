@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <optional>
+#include <vector>
 
 namespace vmp::edit
 {
@@ -60,6 +61,50 @@ bool setStartValue(Set& set, Id clipId, Param param, double value);
 // value; with keypoints it sets one at the music under the playhead (so moving a control while
 // playing records automation). Pitch changes keep the music under the playhead in place.
 bool setParamAt(Set& set, Id clipId, Param param, double value, double playheadSeconds);
+
+// --- Recording mixer moves ---
+
+// A control's position at a moment of a recording pass (timeline seconds).
+struct RecordedMove
+{
+    double seconds = 0.0;
+    double value = 0.0;
+};
+
+// How closely a recorded pass is redrawn, as a fraction of the control's range.
+inline constexpr double kRecordingTolerance = 0.01;
+// When a pass ends inside its clip, the control glides back to its earlier values over this long.
+inline constexpr double kRecordingReturnSeconds = 0.05;
+
+// The fewest moves that redraw `moves` (sorted by time) within `tolerance`: a move is dropped when
+// the straight line between the moves kept either side passes within `tolerance` of its value
+// (Ramer-Douglas-Peucker on the value error). The first and last are always kept.
+std::vector<RecordedMove> thinMoves(const std::vector<RecordedMove>& moves, double tolerance);
+
+// Writes a pass recorded on a mixer control (not pitch) of a playing clip, "latched": from the
+// first move to `endSeconds` the control follows the moves and holds its last value between and
+// after them. The keypoints in that stretch are replaced by the thinned moves; after it, unless
+// the clip ends first, the control glides back to its earlier values. A pass from the needle drop
+// sets the starting value.
+bool writeRecordedPass(Set& set, Id clipId, Param param, const std::vector<RecordedMove>& moves, double endSeconds);
+
+// A control's position after a trim amount (the mixer model's law, MixerChannel::trimmed).
+using TrimLaw = std::function<double(Param param, double position, double amount)>;
+
+// The trim amount at `seconds` in a pass of trim amounts: linear between moves, holding the last
+// (and the first, before it).
+double amountAt(const std::vector<RecordedMove>& moves, double seconds);
+
+// Writes a pass of trim amounts on a mixer control (not pitch) of a playing clip: from the first
+// move to `endSeconds`, the control's existing curve is adjusted by the amount (latched like
+// writeRecordedPass), resampled finely enough to keep its shape, thinned and written in its place;
+// after it the curve is as it was.
+bool writeTrimmedPass(Set& set, Id clipId, Param param, const std::vector<RecordedMove>& amounts, double endSeconds,
+                      const TrimLaw& law);
+
+// Adjusts a mixer control's automation (not pitch) over the whole clip by a trim amount: the
+// starting value and every keypoint, so the curve keeps its keypoints and shape.
+bool trimAutomation(Set& set, Id clipId, Param param, double amount, const TrimLaw& law);
 
 // --- Keeping the rest of the mix in step ---
 

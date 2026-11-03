@@ -3,6 +3,7 @@
 #include "core/Edits.h"
 #include "core/StreamedAudio.h"
 #include "engine/Engine.h"
+#include "engine/MixerChannel.h"
 #include "engine/Prefetcher.h"
 
 #include <catch2/catch_approx.hpp>
@@ -19,6 +20,8 @@ using Catch::Approx;
 namespace
 {
 constexpr double kRate = 48000.0;
+// What the internal mix does to a record with every control at its default: the trim's headroom.
+const float kDefaultGain = MixerChannel::trimGain(0.5);
 constexpr int kBlock = 512;
 
 // One per test: ctest runs tests in parallel processes.
@@ -163,7 +166,7 @@ TEST_CASE("Streamed audio plays exactly like audio in memory, across chunk bound
     for (size_t i = 0; i < expected.size(); ++i)
         worst = std::max(worst, std::abs(expected[i] - actual[i]));
     CHECK(worst < 1e-6f);
-    CHECK(peak(actual, static_cast<size_t>(kRate), static_cast<size_t>(4 * kRate)) > 0.4f);
+    CHECK(peak(actual, static_cast<size_t>(kRate), static_cast<size_t>(4 * kRate)) > 0.4f * kDefaultGain);
 }
 
 TEST_CASE("Starting where nothing is loaded holds the playhead, then plays on and reports underruns")
@@ -219,7 +222,7 @@ TEST_CASE("A small pool keeps up with a seek by giving up chunks far from the pl
     f.engine.seek(40.0);
     const auto out = f.run(2.0, &prefetcher);
     CHECK(f.glitches().empty());
-    CHECK(peak(out, static_cast<size_t>(0.5 * kRate)) > 0.4f);
+    CHECK(peak(out, static_cast<size_t>(0.5 * kRate)) > 0.4f * kDefaultGain);
     CHECK(f.engine.playheadSeconds() == Approx(42.0).margin(0.05));
 }
 
@@ -237,5 +240,5 @@ TEST_CASE("Moving a playing clip far away doesn't underrun: the schedule waits f
     prefetcher.setSchedule(f.schedule());
     const auto out = f.run(1.0, &prefetcher);
     CHECK(f.glitches().empty());
-    CHECK(peak(out, static_cast<size_t>(0.1 * kRate)) > 0.4f);
+    CHECK(peak(out, static_cast<size_t>(0.1 * kRate)) > 0.4f * kDefaultGain);
 }

@@ -50,8 +50,16 @@ void GlitchPanel::add(const std::vector<Glitch>& glitches)
     if (glitches.empty())
         return;
     const auto now = juce::Time::getCurrentTime();
+    constexpr int kMaxLogged = 200; // a bad run shouldn't fill the log
     for (const auto& glitch : glitches)
+    {
         entries_.push_back({glitch, now});
+        if (logged_ < kMaxLogged)
+            juce::Logger::writeToLog("Glitch at " + formatTime(glitch.seconds, true) + ": " + describe(glitch));
+        else if (logged_ == kMaxLogged)
+            juce::Logger::writeToLog("More glitches; no longer logging them");
+        ++logged_;
+    }
     if (entries_.size() > kMaxEntries)
     {
         const auto excess = entries_.size() - kMaxEntries;
@@ -75,6 +83,17 @@ void GlitchPanel::clear()
     entries_.clear();
     lost_ = 0;
     changed();
+}
+
+juce::String GlitchPanel::asText() const
+{
+    juce::String text;
+    for (const auto& entry : entries_)
+        text << entry.when.formatted("%H:%M:%S") << "  " << formatTime(entry.glitch.seconds, true) << "  "
+             << describe(entry.glitch) << "\n";
+    if (lost_ > 0)
+        text << static_cast<int>(lost_) << " more not listed\n";
+    return text.isNotEmpty() ? text : "No glitches\n";
 }
 
 std::vector<double> GlitchPanel::positions() const

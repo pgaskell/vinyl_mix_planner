@@ -66,7 +66,10 @@ enum Command : juce::CommandID
     kShowPlayhead,
     kToggleBeatGuides,
     kExportMix,
-    kLastCommand = kExportMix
+    kCycleAutomationMode,
+    kReportProblem,
+    kCycleLaneHeight,
+    kLastCommand = kCycleLaneHeight
 };
 
 } // namespace vmp

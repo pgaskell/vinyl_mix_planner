@@ -313,6 +313,165 @@ bool setParamAt(Set& set, Id clipId, Param param, double value, double playheadS
     return true;
 }
 
+std::vector<RecordedMove> thinMoves(const std::vector<RecordedMove>& moves, double tolerance)
+{
+    if (moves.size() <= 2)
+        return moves;
+    std::vector<bool> keep(moves.size(), false);
+    keep.front() = keep.back() = true;
+    std::vector<std::pair<size_t, size_t>> spans{{0, moves.size() - 1}};
+    while (!spans.empty())
+    {
+        const auto [a, b] = spans.back();
+        spans.pop_back();
+        const double span = moves[b].seconds - moves[a].seconds;
+        double worst = 0.0;
+        size_t at = a;
+        for (size_t i = a + 1; i < b; ++i)
+        {
+            const double t = span > 0.0 ? (moves[i].seconds - moves[a].seconds) / span : 0.0;
+            const double line = moves[a].value + t * (moves[b].value - moves[a].value);
+            if (const double error = std::abs(moves[i].value - line); error > worst)
+            {
+                worst = error;
+                at = i;
+            }
+        }
+        if (worst > tolerance)
+        {
+            keep[at] = true;
+            spans.push_back({a, at});
+            spans.push_back({at, b});
+        }
+    }
+    std::vector<RecordedMove> kept;
+    for (size_t i = 0; i < moves.size(); ++i)
+        if (keep[i])
+            kept.push_back(moves[i]);
+    return kept;
+}
+
+bool writeRecordedPass(Set& set, Id clipId, Param param, const std::vector<RecordedMove>& moves, double endSeconds)
+{
+    Clip* clip = findClip(set, clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr || param == Param::Pitch || moves.empty())
+        return false;
+    const ClipTiming timing(*clip, *track);
+    auto sorted = moves;
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.seconds < b.seconds; });
+    const double from = std::max(sorted.front().seconds, timing.startSeconds());
+    const double to = std::min(endSeconds, timing.endSeconds());
+    if (!(to >= from))
+        return false;
+
+    // The pass within the clip, holding the last value to the end.
+    std::vector<RecordedMove> pass{{from, sorted.front().value}};
+    for (const auto& move : sorted)
+    {
+        if (!std::isfinite(move.value) || move.seconds > to)
+            continue;
+        if (move.seconds <= from)
+            pass.front().value = move.value;
+        else
+            pass.push_back(move);
+    }
+    if (pass.back().seconds < to)
+        pass.push_back({to, pass.back().value});
+    for (auto& move : pass)
+        move.value = clampValue(param, move.value);
+    const auto range = paramRange(param);
+    pass = thinMoves(pass, kRecordingTolerance * (range.max - range.min));
+
+    const Clip old = *clip;
+    auto frameAt = [&](double seconds) { return static_cast<int64_t>(std::llround(timing.sourceFrameAt(seconds))); };
+    std::optional<AutomationPoint> back;
+    if (to + kRecordingReturnSeconds < timing.endSeconds())
+    {
+        const int64_t frame = frameAt(to + kRecordingReturnSeconds);
+        back = AutomationPoint{frame, valueAt(old, param, static_cast<double>(frame))};
+    }
+    const int64_t first = frameAt(from), last = back ? back->sourceFrame : frameAt(to);
+    auto& points = clip->points(param);
+    std::erase_if(points, [&](const auto& p) { return p.sourceFrame >= first && p.sourceFrame <= last; });
+    for (size_t i = 0; i < pass.size(); ++i)
+    {
+        if (i == 0 && pass[i].seconds - timing.startSeconds() <= kKeypointSnapSeconds)
+            mixerValue(clip->mixer, param) = pass[i].value;
+        else
+            points.push_back({frameAt(pass[i].seconds), pass[i].value});
+    }
+    if (back)
+        points.push_back(*back);
+    sortPoints(points);
+    return true;
+}
+
+double amountAt(const std::vector<RecordedMove>& moves, double seconds)
+{
+    if (moves.empty())
+        return 0.0;
+    auto after = std::upper_bound(moves.begin(), moves.end(), seconds,
+                                  [](double s, const RecordedMove& m) { return s < m.seconds; });
+    if (after == moves.begin())
+        return moves.front().value;
+    if (after == moves.end())
+        return moves.back().value;
+    const auto before = std::prev(after);
+    const double span = after->seconds - before->seconds;
+    const double t = span > 0.0 ? (seconds - before->seconds) / span : 1.0;
+    return before->value + t * (after->value - before->value);
+}
+
+bool writeTrimmedPass(Set& set, Id clipId, Param param, const std::vector<RecordedMove>& amounts, double endSeconds,
+                      const TrimLaw& law)
+{
+    const Clip* clip = findClip(set, clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr || param == Param::Pitch || amounts.empty() || !law)
+        return false;
+    const ClipTiming timing(*clip, *track);
+    const double from = std::max(amounts.front().seconds, timing.startSeconds());
+    const double to = std::min(endSeconds, timing.endSeconds());
+    if (!(to >= from))
+        return false;
+
+    // The adjusted curve, sampled at the pass's moves, either side of the old keypoints (so jumps
+    // stay sharp), and every few milliseconds between (the law bends straight lines).
+    constexpr double kStep = 0.02, kEither = 0.001;
+    std::vector<double> times{from, to};
+    for (const auto& move : amounts)
+        times.push_back(move.seconds);
+    for (const auto& point : clip->points(param))
+    {
+        const double t = timing.timelineSecondsAt(static_cast<double>(point.sourceFrame));
+        times.insert(times.end(), {t - kEither, t + kEither});
+    }
+    for (double t = from; t < to; t += kStep)
+        times.push_back(t);
+    std::erase_if(times, [&](double t) { return t < from || t > to; });
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+
+    std::vector<RecordedMove> adjusted;
+    adjusted.reserve(times.size());
+    for (double t : times)
+        adjusted.push_back({t, law(param, valueAt(*clip, param, timing.sourceFrameAt(t)), amountAt(amounts, t))});
+    return writeRecordedPass(set, clipId, param, adjusted, to);
+}
+
+bool trimAutomation(Set& set, Id clipId, Param param, double amount, const TrimLaw& law)
+{
+    Clip* clip = findClip(set, clipId);
+    if (clip == nullptr || param == Param::Pitch || !law || !std::isfinite(amount))
+        return false;
+    auto& start = mixerValue(clip->mixer, param);
+    start = clampValue(param, law(param, start, amount));
+    for (auto& point : clip->points(param))
+        point.value = clampValue(param, law(param, point.value, amount));
+    return true;
+}
+
 bool setClipMixer(Set& set, Id clipId, const ChannelSettings& settings)
 {
     Clip* clip = findClip(set, clipId);

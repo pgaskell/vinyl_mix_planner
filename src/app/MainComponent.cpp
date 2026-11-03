@@ -1,8 +1,10 @@
 #include "app/MainComponent.h"
 
 #include "app/Commands.h"
+#include "app/ProblemReport.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
+#include "engine/MixerChannel.h"
 #include "core/Pitch.h"
 #include "core/SetFile.h"
 
@@ -21,6 +23,7 @@ constexpr int kMenuDecksBase = 4000;  // + number of decks
 constexpr int kMenuNone = 99;
 constexpr int kMenuCacheLimitBase = 5000; // + gigabytes
 constexpr int kMenuClearCache = 5999;
+constexpr int kMenuLaneHeightBase = 6000; // + TimelineView::LaneHeight
 
 constexpr double kNudgeSeconds = 0.010;
 constexpr double kFineNudgeSeconds = 0.001;
@@ -59,6 +62,8 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     // --- Panels ---
     addAndMakeVisible(timeline_);
     timeline_.setShowsBeatGuides(settings_.getBoolValue("beatGuides", true));
+    timeline_.setLaneHeight(static_cast<TimelineView::LaneHeight>(std::clamp(settings_.getIntValue("laneHeight", 3), 0, 3)));
+    timeline_.onLaneHeightChosen = [this](TimelineView::LaneHeight height) { setLaneHeight(height); };
     hardwareControl_ = settings_.getBoolValue("hardwareControl", true);
     timeline_.onSelectionChanged = [this](Id id) {
         inspector_.setClip(id);
@@ -84,6 +89,17 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
         timeline_.grabKeyboardFocus();
     };
     library_.onSearchDone = [this] { timeline_.grabKeyboardFocus(); };
+    mixer_.setRecordHooks({[this](int deck, Id clip, Param param, double value) {
+                               return recordMove(deck, clip, param, value);
+                           },
+                           [this](int deck, Param param) { return recorder_.latched(deck, param); },
+                           [this](int deck, Param param) { return recorder_.latchedTrim(deck, param); },
+                           [this](int deck, Param param) { return modeFor(deck, param); },
+                           [this](int deck, Param param) {
+                               const auto* pass = recorder_.pass(deck, param);
+                               return pass != nullptr && pass->mode == AutomationMode::Latch;
+                           }});
+    timeline_.showRecording(&recorder_);
 
     issues_.onIssueClicked = [this](Id clip) {
         timeline_.setSelectedClip(clip);
@@ -114,6 +130,25 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     commandButton(rewindButton_, kJumpBack, "Back by the number of beats chosen on the right");
     commandButton(playButton_, kPlayPause, "Play / pause (space)");
     commandButton(stopButton_, kStop, "Stop and return to where playback started (shift space)");
+    commandButton(controlModeButton_, kCycleAutomationMode,
+                  "What the mixer controls you move while playing do (click or R for the next mode).\n"
+                  "Override: you hear them, nothing is written (practice).\n"
+                  "Latch: written into the record's automation from where you took hold of the control until you "
+                  "stop (or the record ends).\n"
+                  "Trim: adjusts that control's automation from where you took hold of it until you stop (or the "
+                  "record ends): volume and EQ up or down in dB (a kill stays a kill), COLOR further from or "
+                  "nearer the centre; a drag sets the amount. (Nothing to do with the trim knob.)\n"
+                  "Trim All: the same over the whole record.\n"
+                  "Switching never changes what you hear: a control keeps doing what it was doing until you take "
+                  "hold of it again (one holding a position stays as it is in Trim until you stop). Stopped, moving a control edits the set in every mode. Audio is "
+                  "never recorded.");
+    {
+        const auto saved = settings_.getValue("automationMode", "latch");
+        setAutomationMode(saved == "override"  ? AutomationMode::Override
+                          : saved == "trim"    ? AutomationMode::Trim
+                          : saved == "trimall" ? AutomationMode::TrimAll
+                                               : AutomationMode::Latch);
+    }
     commandButton(forwardButton_, kJumpForward, "Forward by the number of beats chosen on the right");
     commandButton(nextMixButton_, kNextMix, "On to the next mix (where two decks overlap)");
     for (int beats : {4, 8, 16, 32})
@@ -182,6 +217,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
 
     // --- Document: reopen the last set ---
     const juce::File lastSet(settings_.getValue("lastSet"));
+    timeline_.setShownAutomation(SetView::defaultAutomation()); // until a set says otherwise
     if (lastSet.existsAsFile())
         openSetFile(lastSet);
     else
@@ -282,7 +318,9 @@ void MainComponent::timerCallback()
         documentChanged();
 
     timeline_.updatePlayhead();
-    mixer_.update(timeline_.selectedClip(), engine_.playheadSeconds());
+    updateRecording();
+    mixer_.update(timeline_.selectedClip(), engine_.playheadSeconds(), engine_.isPlaying());
+    timeline_.updatePitchFaders(engine_.isPlaying());
     {
         const double now = juce::Time::getMillisecondCounterHiRes() * 1e-3;
         std::array<StereoPeak, kMaxDecks> decks{};
@@ -344,13 +382,211 @@ void MainComponent::applyHardwareControls()
     {
         const bool has = on && d < static_cast<int>(hardwareMixer_->profile().channels.size());
         const auto state = has ? hardwareMixer_->channel(d) : HardwareMixer::ChannelState{};
-        engine_.setLiveControl(d, Param::Volume, state.fader);
-        engine_.setLiveControl(d, Param::High, state.high);
-        engine_.setLiveControl(d, Param::Mid, state.mid);
-        engine_.setLiveControl(d, Param::Low, state.low);
-        engine_.setLiveControl(d, Param::Color, state.color);
+        // A control being recorded plays where it's latched, unless the hardware mixer has it.
+        auto live = [&](Param param, std::optional<double> hardware) {
+            engine_.setLiveControl(d, param, hardware ? hardware : recorder_.latched(d, param));
+            engine_.setLiveScale(d, param, recorder_.latchedTrim(d, param));
+        };
+        live(Param::Volume, state.fader);
+        live(Param::High, state.high);
+        live(Param::Mid, state.mid);
+        live(Param::Low, state.low);
+        live(Param::Color, state.color);
         engine_.setLiveTrim(d, state.trim);
     }
+}
+
+bool MainComponent::recordMove(int deck, Id clipId, Param param, double value)
+{
+    // In every mode, moves while playing go to the recorder: they latch and are heard. Only Record
+    // and Trim passes are written into the set (finishPasses).
+    if (!engine_.isPlaying())
+        return false;
+    const Set& set = document_.set();
+    const Clip* clip = set.findClip(clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr || clip->deck != deck)
+        return false;
+    // Placed where it was heard: the DJ reacts to what comes out of the speakers.
+    const double seconds = heardSeconds();
+    const ClipTiming timing(*clip, *track);
+    if (seconds < timing.startSeconds() || seconds >= timing.endSeconds())
+        return false;
+    recorder_.move(deck, clipId, timing.endSeconds(), param, value, seconds, modeFor(deck, param));
+    applyHardwareControls(); // heard now, not at the next tick
+    return true;
+}
+
+void MainComponent::updateRecording()
+{
+    const double heard = heardSeconds();
+    if (recorder_.recording())
+    {
+        // Stopped, paused or jumped (or the playhead was moved): the passes end where playback was.
+        const bool jumped = heard < lastHeard_ - 0.05 || heard > lastHeard_ + 1.0;
+        if (!engine_.isPlaying() || jumped)
+            recorder_.finishAll(lastHeard_);
+        else
+        {
+            recorder_.finishEnded(heard);
+            recorder_.settle(heard - kSettleSeconds);
+        }
+    }
+    lastHeard_ = heard;
+    if (recorder_.recording() || wasRecording_)
+        timeline_.repaint(); // the passes grow with the playhead
+    wasRecording_ = recorder_.recording();
+    finishPasses();
+}
+
+AutomationMode MainComponent::modeFor(int deck, Param param) const
+{
+    const auto* pass = recorder_.pass(deck, param);
+    // Holding a position, or in the other trim: a trim now would jump (back to the set's curve, or
+    // count twice), so it carries on as it is.
+    if (isTrim(controlMode_) && pass != nullptr && pass->mode != controlMode_)
+        return pass->mode;
+    return controlMode_;
+}
+
+void MainComponent::finishPasses()
+{
+    auto passes = recorder_.takeFinished();
+    std::erase_if(passes, [](const auto& pass) { return pass.mode == AutomationMode::Override; }); // practice
+    if (passes.empty())
+    {
+        applyHardwareControls(); // the engine plays the set's values again
+        return;
+    }
+    juce::Logger::writeToLog("Recorded " + juce::String(static_cast<int>(passes.size())) + " mixer pass(es)");
+    document_.beginGesture(); // one undo step
+    for (const auto& pass : passes)
+        document_.edit([&](Set& s) {
+            switch (pass.mode)
+            {
+            case AutomationMode::Trim:
+                return edit::writeTrimmedPass(s, pass.clip, pass.param, pass.moves, pass.end, MixerChannel::trimmed);
+            case AutomationMode::TrimAll:
+                return edit::trimAutomation(s, pass.clip, pass.param, pass.moves.back().value, MixerChannel::trimmed);
+            case AutomationMode::Latch:
+            case AutomationMode::Override: // dropped above
+                break;
+            }
+            return edit::writeRecordedPass(s, pass.clip, pass.param, pass.moves, pass.end);
+        });
+    document_.endGesture();
+    applyHardwareControls(); // the engine plays the set's values again
+}
+
+void MainComponent::reportProblem()
+{
+    reportWindow_ = std::make_unique<juce::AlertWindow>(
+        "Report a Problem",
+        "Say what happened and what you were doing just before. This saves a zip file to your Desktop to send "
+        "to the developer. It holds your set as it is now (track names and file paths, no audio), the app's "
+        "log, the Glitches list, your audio device and any crash reports.",
+        juce::MessageBoxIconType::NoIcon);
+    reportWindow_->addTextEditor("what", {}, "What happened?");
+    if (auto* editor = reportWindow_->getTextEditor("what"))
+    {
+        editor->setMultiLine(true, true);
+        editor->setReturnKeyStartsNewLine(true);
+        editor->setSize(editor->getWidth(), 120);
+    }
+    reportWindow_->addButton("Save Report", 1);
+    reportWindow_->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    reportWindow_->enterModalState(true, juce::ModalCallbackFunction::create([this](int button) {
+        ProblemReport report;
+        report.description = reportWindow_->getTextEditorContents("what");
+        juce::MessageManager::callAsync([this] { reportWindow_.reset(); }); // not from inside its own callback
+        if (button != 1)
+            return;
+        report.info = reportInfo();
+        report.glitches = glitches_.asText();
+        const SetView view{timeline_.shownAutomation()};
+        report.setJson = setToJson(document_.set(), &view);
+        juce::Logger::writeToLog("Saving a problem report");
+
+        const auto zip = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+                             .getNonexistentChildFile("Vinyl Mix Planner report " +
+                                                          juce::Time::getCurrentTime().formatted("%Y-%m-%d %H.%M"),
+                                                      ".zip", false);
+        if (!writeProblemReport(zip, report))
+        {
+            showError("Couldn't save the report", "Writing " + zip.getFullPathName() + " failed.");
+            return;
+        }
+        zip.revealToUser();
+        messageBox_ = juce::NativeMessageBox::showScopedAsync(
+            juce::MessageBoxOptions()
+                .withIconType(juce::MessageBoxIconType::InfoIcon)
+                .withTitle("Report saved")
+                .withMessage("Saved " + zip.getFileName() + " to your Desktop. Please send it to the developer, " +
+                             "with the audio file if the problem is with one track.")
+                .withButton("OK"),
+            nullptr);
+    }));
+}
+
+juce::String MainComponent::reportInfo() const
+{
+    using juce::SystemStats;
+    const auto stats = prefetcher_.stats();
+    const Set& set = document_.set();
+    juce::String info;
+    info << juce::JUCEApplication::getInstance()->getApplicationName() << " "
+         << juce::JUCEApplication::getInstance()->getApplicationVersion() << "\n"
+         << SystemStats::getOperatingSystemName() << ", " << SystemStats::getDeviceDescription() << ", "
+         << SystemStats::getCpuModel() << ", " << SystemStats::getMemorySizeInMegabytes() / 1024 << " GB\n"
+         << "Report made " << juce::Time::getCurrentTime().toString(true, true) << "\n\n"
+         << "Audio: " << deviceLabel_.getText() << "\n"
+         << "Output: " << (engine_.outputMode() == OutputMode::DirectOut ? "direct out" : "internal mix")
+         << ", " << set.numDecks << " decks\n"
+         << "Hardware mixer: " << (hardwareMixer_ ? juce::String(hardwareMixer_->profile().name) : "none")
+         << (hardwareControl_ ? "" : " (not controlling the mix)") << "\n"
+         << "Mixer controls: " << controlModeButton_.getButtonText() << "\n"
+         << "Streaming: " << stats.chunksLoaded << " of " << stats.poolChunks << " chunks loaded, "
+         << static_cast<int64_t>(stats.readErrors) << " read errors, memory "
+         << (stats.memoryLocked ? "locked" : "NOT locked") << "\n"
+         << "Decode cache: " << juce::String(static_cast<double>(pool_.cacheBytes()) / (1 << 30), 1) << " of "
+         << static_cast<int>(pool_.cacheLimit() >> 30) << " GB\n\n"
+         << "Set: " << (file_ != juce::File() ? file_.getFullPathName() : juce::String("(never saved)"))
+         << (document_.isDirty() ? " (unsaved changes)" : "") << "\n"
+         << set.clips.size() << " clips, " << set.tracks.size() << " tracks\n";
+    for (const auto& track : set.tracks)
+    {
+        const auto* entry = pool_.find(track.path);
+        const juce::String status = entry == nullptr                                 ? "not loaded"
+                                    : entry->status == AudioPool::Status::Loading ? "loading"
+                                    : entry->status == AudioPool::Status::Failed
+                                        ? "FAILED: " + entry->error
+                                        : (entry->streamed ? "ready (streamed)" : "ready (in memory)");
+        info << "  " << juce::String(juce::CharPointer_UTF8(track.path.c_str())) << ": " << status << "\n";
+    }
+    return info;
+}
+
+void MainComponent::setLaneHeight(TimelineView::LaneHeight height)
+{
+    timeline_.setLaneHeight(height);
+    settings_.setValue("laneHeight", static_cast<int>(height));
+    menuItemsChanged();
+}
+
+void MainComponent::setAutomationMode(AutomationMode mode)
+{
+    // Controls being held keep the mode they were taken hold of in (MixRecorder), so nothing heard
+    // changes: the new mode is for the next control taken hold of.
+    controlMode_ = mode;
+    static const char* const kKeys[] = {"override", "latch", "trim", "trimall"};
+    settings_.setValue("automationMode", kKeys[static_cast<int>(mode)]);
+    static const char* const kNames[] = {"Override", "Latch", "Trim", "Trim All"};
+    static const juce::Colour kColours[] = {{}, juce::Colour(0xffc62828), juce::Colour(0xff9a7d00),
+                                            juce::Colour(0xff9a7d00)};
+    controlModeButton_.setButtonText(kNames[static_cast<int>(mode)]);
+    controlModeButton_.setToggleState(mode != AutomationMode::Override, juce::dontSendNotification);
+    controlModeButton_.setColour(juce::TextButton::buttonOnColourId, kColours[static_cast<int>(mode)]);
+    commands_.commandStatusChanged();
 }
 
 void MainComponent::collectGlitches()
@@ -474,16 +710,19 @@ void MainComponent::updateDeviceInfo()
         const double rate = device->getCurrentSampleRate();
         // What we play is heard this much later (JUCE counts the buffer, driver and device).
         const double latencyMs = rate > 0.0 ? 1000.0 * device->getOutputLatencyInSamples() / rate : 0.0;
+        outputLatency_ = latencyMs / 1000.0;
         deviceLabel_.setText(device->getName() + "  " + juce::String(rate / 1000.0, 1) + " kHz, " +
                                  juce::String(device->getCurrentBufferSizeSamples()) + " samples (" +
                                  juce::String(juce::roundToInt(latencyMs)) + " ms out), " +
                                  juce::String(active.countNumberOfSetBits()) + " of " +
                                  juce::String(device->getOutputChannelNames().size()) + " outputs on",
                              juce::dontSendNotification);
+        juce::Logger::writeToLog("Audio device: " + deviceLabel_.getText());
     }
     else
     {
         deviceLabel_.setText("No audio device", juce::dontSendNotification);
+        juce::Logger::writeToLog("No audio device");
     }
     menuItemsChanged();
 }
@@ -713,6 +952,7 @@ void MainComponent::newSet()
     confirmDiscard([this] {
         document_.reset(Set{});
         file_ = juce::File();
+        timeline_.setShownAutomation(SetView::defaultAutomation());
         pool_.retainOnly({});
         documentChanged();
         timeline_.zoomToSet();
@@ -736,7 +976,9 @@ void MainComponent::openSetFile(const juce::File& file)
 {
     try
     {
-        document_.reset(loadSet(std::filesystem::path(file.getFullPathName().toStdString())));
+        SetView view;
+        document_.reset(loadSet(std::filesystem::path(file.getFullPathName().toStdString()), &view));
+        timeline_.setShownAutomation(view.automation);
     }
     catch (const SetFileError& e)
     {
@@ -745,6 +987,7 @@ void MainComponent::openSetFile(const juce::File& file)
     }
     file_ = file;
     settings_.setValue("lastSet", file.getFullPathName());
+    juce::Logger::writeToLog("Opened " + file.getFullPathName());
 
     std::set<std::string> paths;
     for (const auto& track : document_.set().tracks)
@@ -791,7 +1034,8 @@ bool MainComponent::writeSet(const juce::File& file)
     set.name = file.getFileNameWithoutExtension().toStdString();
     try
     {
-        saveSet(set, std::filesystem::path(file.getFullPathName().toStdString()));
+        const SetView view{timeline_.shownAutomation()};
+        saveSet(set, std::filesystem::path(file.getFullPathName().toStdString()), &view);
     }
     catch (const SetFileError& e)
     {
@@ -800,11 +1044,13 @@ bool MainComponent::writeSet(const juce::File& file)
     }
     document_.markSaved();
     updateTitle();
+    juce::Logger::writeToLog("Saved " + file.getFullPathName());
     return true;
 }
 
 void MainComponent::showError(const juce::String& title, const juce::String& message)
 {
+    juce::Logger::writeToLog("Error: " + title + ". " + message);
     messageBox_ = juce::NativeMessageBox::showScopedAsync(juce::MessageBoxOptions()
                                                               .withIconType(juce::MessageBoxIconType::WarningIcon)
                                                               .withTitle(title)
@@ -1090,6 +1336,18 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         info.setTicked(timeline_.showsBeatGuides());
         key('l');
         break;
+    case kCycleAutomationMode:
+        define("Automation Mode: Override / Latch / Trim / Trim All",
+               "What moving a mixer control while playing does: practise, write or trim automation", "Transport");
+        key('r');
+        break;
+    case kCycleLaneHeight:
+        define("Next Lane Height", "Make the deck lanes smaller, then back to full: small, medium, large, full", "View");
+        key('h');
+        break;
+    case kReportProblem:
+        define("Report a Problem...", "Save what's needed to look into a problem, to send to the developer", "Help");
+        break;
     case kToggleKeyNotation:
         define("Key Notation: Standard / Camelot / Both", "Change how keys are written", "View");
         key('k');
@@ -1313,6 +1571,15 @@ bool MainComponent::perform(const InvocationInfo& info)
         followButton_.setToggleState(timeline_.followsPlayhead(), juce::dontSendNotification);
         commands_.commandStatusChanged();
         break;
+    case kCycleAutomationMode:
+        setAutomationMode(static_cast<AutomationMode>((static_cast<int>(controlMode_) + 1) % 4));
+        break;
+    case kReportProblem:
+        reportProblem();
+        break;
+    case kCycleLaneHeight:
+        setLaneHeight(static_cast<TimelineView::LaneHeight>((static_cast<int>(timeline_.laneHeight()) + 1) % 4));
+        break;
     case kToggleBeatGuides:
         timeline_.setShowsBeatGuides(!timeline_.showsBeatGuides());
         settings_.setValue("beatGuides", timeline_.showsBeatGuides());
@@ -1350,7 +1617,7 @@ bool MainComponent::perform(const InvocationInfo& info)
 
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return {"File", "Edit", "Clip", "Grid", "View", "Audio"};
+    return {"File", "Edit", "Clip", "Grid", "View", "Audio", "Help"};
 }
 
 juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
@@ -1392,11 +1659,21 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
              kGridReset});
         break;
     case 4:
-        add({kPlayPause, kStop, kGoToStart, kJumpBack, kJumpForward, kPreviousMix, kNextMix});
+        add({kPlayPause, kStop, kGoToStart, kJumpBack, kJumpForward, kPreviousMix, kNextMix, kCycleAutomationMode});
         menu.addSeparator();
         add({kZoomIn, kZoomOut, kZoomSet, kZoomClip, kZoomTransition, kZoomBeats});
         menu.addSeparator();
         add({kShowPlayhead, kToggleFollow, kToggleBeatGuides, kToggleKeyNotation, kCycleAutomationView});
+        menu.addSeparator();
+        {
+            juce::PopupMenu heights;
+            static const char* const kNames[] = {"Small", "Medium", "Large", "Full"};
+            for (int h = 0; h < 4; ++h)
+                heights.addItem(kMenuLaneHeightBase + h, kNames[h], true,
+                                static_cast<int>(timeline_.laneHeight()) == h);
+            menu.addSubMenu("Lane Height", heights);
+            add({kCycleLaneHeight});
+        }
         break;
     case 5:
     {
@@ -1447,6 +1724,9 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         menu.addSubMenu("Decode Cache", cache);
         break;
     }
+    case 6:
+        add({kReportProblem});
+        break;
     default:
         break;
     }
@@ -1455,7 +1735,11 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
 
 void MainComponent::menuItemSelected(int itemId, int)
 {
-    if (itemId == kMenuModeInternal || itemId == kMenuModeDirect)
+    if (itemId >= kMenuLaneHeightBase && itemId < kMenuLaneHeightBase + 4)
+    {
+        setLaneHeight(static_cast<TimelineView::LaneHeight>(itemId - kMenuLaneHeightBase));
+    }
+    else if (itemId == kMenuModeInternal || itemId == kMenuModeDirect)
     {
         setOutputMode(itemId == kMenuModeDirect ? OutputMode::DirectOut : OutputMode::InternalMix);
     }
@@ -1523,7 +1807,8 @@ void MainComponent::resized()
 
     auto bar = area.removeFromTop(42).reduced(8, 7);
     for (auto [button, width] : {std::pair<juce::Component*, int>{&previousMixButton_, 34}, {&rewindButton_, 34},
-                                 {&playButton_, 44}, {&stopButton_, 34}, {&forwardButton_, 34}, {&nextMixButton_, 34},
+                                 {&playButton_, 44}, {&stopButton_, 34}, {&forwardButton_, 34},
+                                 {&nextMixButton_, 34},
                                  {&beatJumpBox_, 92}})
     {
         button->setBounds(bar.removeFromLeft(width));
@@ -1557,6 +1842,8 @@ void MainComponent::resized()
     libraryEdge_.setBounds(area.removeFromLeft(5));
     auto right = area.removeFromRight(std::max(250, MixerPanel::preferredWidth(document_.set().numDecks)));
     inspector_.setBounds(right.removeFromTop(Inspector::kPreferredHeight));
+    // What the mixer's controls do: across the channel strips, not the mix meter.
+    controlModeButton_.setBounds(right.removeFromTop(30).withTrimmedRight(MixerPanel::kMixMeterWidth).reduced(1, 3));
     mixer_.setBounds(right);
     bottomTabs_.setBounds(area.removeFromBottom(130));
     timeline_.setBounds(area);

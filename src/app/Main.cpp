@@ -1,4 +1,5 @@
 #include "app/MainComponent.h"
+#include "app/ProblemReport.h"
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
@@ -44,6 +45,10 @@ public:
         options.osxLibrarySubFolder = "Application Support";
         properties_.setStorageParameters(options);
 
+        log_ = openLog(getApplicationName() + " " + getApplicationVersion() + " on " +
+                       juce::SystemStats::getOperatingSystemName());
+        juce::Logger::setCurrentLogger(log_.get());
+
         window_ = std::make_unique<MainWindow>(getApplicationName(), *properties_.getUserSettings());
     }
 
@@ -51,6 +56,8 @@ public:
     {
         window_.reset(); // saves routing settings
         properties_.saveIfNeeded();
+        juce::Logger::writeToLog("Quit");
+        juce::Logger::setCurrentLogger(nullptr);
     }
 
     // Window close and Cmd+Q both come here: offer to save first.
@@ -64,6 +71,7 @@ public:
 
 private:
     juce::ApplicationProperties properties_;
+    std::unique_ptr<juce::FileLogger> log_;
     std::unique_ptr<MainWindow> window_;
 };
 

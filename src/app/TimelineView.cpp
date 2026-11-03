@@ -4,6 +4,7 @@
 #include "app/LibraryPanel.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
+#include "engine/MixerChannel.h"
 #include "core/Pitch.h"
 
 #include <cmath>
@@ -75,6 +76,52 @@ TimelineView::TimelineView(SetDocument& document, AudioPool& pool, Engine& engin
             };
             addChildComponent(toggle);
         }
+    static const char* const kHeightNames[] = {"S", "M", "L", "Full"};
+    for (size_t h = 0; h < laneHeightButtons_.size(); ++h)
+    {
+        auto& button = laneHeightButtons_[h];
+        button.setButtonText(kHeightNames[h]);
+        button.setTooltip("Lane height: small, medium, large or full, for all decks (H)");
+        button.setWantsKeyboardFocus(false);
+        button.setClickingTogglesState(false);
+        button.setConnectedEdges((h > 0 ? juce::Button::ConnectedOnLeft : 0) |
+                                 (h + 1 < laneHeightButtons_.size() ? juce::Button::ConnectedOnRight : 0));
+        button.onClick = [this, h] {
+            if (onLaneHeightChosen)
+                onLaneHeightChosen(static_cast<LaneHeight>(h));
+        };
+        addAndMakeVisible(button);
+    }
+    laneHeightButtons_.back().setToggleState(true, juce::dontSendNotification);
+    for (int d = 0; d < kMaxDecks; ++d)
+    {
+        pitchFaders_[static_cast<size_t>(d)] =
+            std::make_unique<PitchFader>(d, document_, [this] { return engine_.playheadSeconds(); });
+        addChildComponent(*pitchFaders_[static_cast<size_t>(d)]);
+    }
+}
+
+void TimelineView::updatePitchFaders(bool playing)
+{
+    const Set& set = document_.set();
+    for (int d = 0; d < numDecks(); ++d)
+        pitchFaders_[static_cast<size_t>(d)]->show(clipForDeck(set, d, selected_, playhead_, playing), playhead_);
+}
+
+void TimelineView::setLaneHeight(LaneHeight height)
+{
+    laneHeight_ = height;
+    for (size_t h = 0; h < laneHeightButtons_.size(); ++h)
+        laneHeightButtons_[h].setToggleState(static_cast<size_t>(height) == h, juce::dontSendNotification);
+    resized();
+    repaint();
+}
+
+void TimelineView::setShownAutomation(const std::array<std::array<bool, kNumParams>, kMaxDecks>& shown)
+{
+    for (int d = 0; d < kMaxDecks; ++d)
+        for (int p = 0; p < kNumParams; ++p)
+            setShowsAutomation(d, static_cast<Param>(p), shown[static_cast<size_t>(d)][static_cast<size_t>(p)]);
 }
 
 bool TimelineView::showsAutomation(int deck, Param param) const
@@ -117,12 +164,22 @@ std::vector<std::pair<double, double>> TimelineView::mixes() const
 
 void TimelineView::resized()
 {
-    // Check boxes under the deck name: Pitch, Vol and Color in the first column, Hi/Mid/Low in the second.
+    // The pitch fader down the left of the header; check boxes under the deck name, if the lane is
+    // tall enough: Pitch, Vol and Color in the first column, Hi/Mid/Low in the second.
     constexpr int kRow = 17;
+    auto corner = juce::Rectangle<int>(0, 0, kHeaderWidth, kRulerHeight).reduced(6, 3);
+    const int buttonWidth = corner.getWidth() / static_cast<int>(laneHeightButtons_.size());
+    for (auto& button : laneHeightButtons_)
+        button.setBounds(corner.removeFromLeft(buttonWidth));
     for (int d = 0; d < kMaxDecks; ++d)
     {
-        const bool visible = d < numDecks();
-        const auto header = laneBounds(d).withWidth(kHeaderWidth).reduced(6, 0).withTrimmedTop(26);
+        const auto lane = laneBounds(d);
+        pitchFaders_[static_cast<size_t>(d)]->setVisible(d < numDecks());
+        pitchFaders_[static_cast<size_t>(d)]->setBounds(lane.withX(6).withWidth(kPitchWidth).reduced(0, 3));
+        const bool visible = d < numDecks() && lane.getHeight() >= 26 + 3 * kRow + 4;
+        const auto header = lane.withTrimmedLeft(6 + kPitchWidth).withWidth(kHeaderWidth - 6 - kPitchWidth)
+                                .reduced(6, 0)
+                                .withTrimmedTop(26);
         const int column = header.getWidth() / 2;
         for (int p = 0; p < kNumParams; ++p)
         {
@@ -224,7 +281,9 @@ juce::Rectangle<int> TimelineView::laneBounds(int deck) const
 {
     const int n = numDecks();
     const int top = kRulerHeight;
-    const int height = (getHeight() - top) / std::max(n, 1);
+    const int full = (getHeight() - top) / std::max(n, 1);
+    static constexpr double kFractions[] = {0.25, 0.5, 0.75, 1.0};
+    const int height = std::min(full, std::max(kMinLaneHeight, static_cast<int>(full * kFractions[static_cast<int>(laneHeight_)])));
     return {0, top + deck * height, getWidth(), height};
 }
 
@@ -462,7 +521,8 @@ void TimelineView::paint(juce::Graphics& g)
         g.setColour(deckColour(d));
         g.fillRect(lane.getX(), lane.getY() + 1, 4, lane.getHeight() - 2);
         g.setFont(laneFont_);
-        g.drawText("Deck " + juce::String(d + 1), lane.withWidth(kHeaderWidth).withTrimmedLeft(10).withHeight(26),
+        g.drawText("Deck " + juce::String(d + 1),
+                   lane.withWidth(kHeaderWidth).withTrimmedLeft(6 + kPitchWidth + 6).withHeight(26),
                    juce::Justification::centredLeft);
     }
 
@@ -789,6 +849,78 @@ std::vector<juce::Point<float>> TimelineView::automationVertices(const Clip& cli
 
 void TimelineView::paintAutomation(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
                                    juce::Rectangle<int> area)
+{
+    const auto* pass = recorder_ != nullptr ? recorder_->pass(clip.deck, param) : nullptr;
+    if (pass != nullptr && pass->clip == clip.id && isTrim(pass->mode) && !pass->moves.empty())
+    {
+        // Trimming: the curve after the amount, as it's heard, a couple of pixels at a time; Trim
+        // from where it began to the playhead (the rest as it is), Trim All the whole clip.
+        const bool all = pass->mode == AutomationMode::TrimAll;
+        const double from = all ? timing.startSeconds() : pass->moves.front().seconds;
+        const double to = all ? timing.endSeconds()
+                              : std::min(std::max(playhead_, pass->moves.back().seconds), timing.endSeconds());
+        if (!all)
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            const auto x0 = static_cast<int>(std::floor(timeToX(from))), x1 = static_cast<int>(std::ceil(timeToX(to)));
+            g.excludeClipRegion({x0, area.getY(), std::max(0, x1 - x0), area.getHeight()});
+            paintCurve(g, clip, timing, param, area);
+        }
+        auto trimmedAt = [&](double seconds) {
+            const double amount = all ? pass->moves.back().value : edit::amountAt(pass->moves, seconds);
+            return MixerChannel::trimmed(param, valueAt(clip, param, timing.sourceFrameAt(seconds)), amount);
+        };
+        const double step = 2.0 / pixelsPerSecond_;
+        const double first = std::max(from, xToTime(kHeaderWidth) - step);
+        const double last = std::min(to, xToTime(getWidth()) + step);
+        if (last <= first)
+            return; // off screen
+        juce::Path line;
+        auto point = [&](double seconds) {
+            return juce::Point<float>(static_cast<float>(timeToX(seconds)),
+                                      static_cast<float>(valueToY(param, trimmedAt(seconds), area)));
+        };
+        line.startNewSubPath(point(first));
+        for (double t = first + step; t < last; t += step)
+            line.lineTo(point(t));
+        line.lineTo(point(last));
+        g.setColour(juce::Colours::black.withAlpha(0.6f));
+        g.strokePath(line, juce::PathStrokeType(3.5f));
+        g.setColour(paramColour(param));
+        g.strokePath(line, juce::PathStrokeType(1.75f));
+        return;
+    }
+    if (pass != nullptr && pass->clip == clip.id && pass->mode == AutomationMode::Latch && !pass->moves.empty())
+    {
+        // Recording: the old curve is hidden where the pass covers it. (Override passes aren't
+        // drawn: they won't change it.)
+        const double from = pass->moves.front().seconds;
+        const double to = std::min(std::max(playhead_, pass->moves.back().seconds), timing.endSeconds());
+        const auto x0 = static_cast<int>(std::floor(timeToX(from))), x1 = static_cast<int>(std::ceil(timeToX(to)));
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.excludeClipRegion({x0, area.getY(), std::max(0, x1 - x0), area.getHeight()});
+            paintCurve(g, clip, timing, param, area);
+        }
+        juce::Path line;
+        auto point = [&](double seconds, double value) {
+            return juce::Point<float>(static_cast<float>(timeToX(seconds)), static_cast<float>(valueToY(param, value, area)));
+        };
+        line.startNewSubPath(point(from, pass->moves.front().value));
+        for (const auto& move : pass->moves)
+            line.lineTo(point(move.seconds, move.value));
+        line.lineTo(point(to, pass->moves.back().value));
+        g.setColour(juce::Colours::black.withAlpha(0.6f));
+        g.strokePath(line, juce::PathStrokeType(3.5f));
+        g.setColour(paramColour(param));
+        g.strokePath(line, juce::PathStrokeType(1.75f));
+        return;
+    }
+    paintCurve(g, clip, timing, param, area);
+}
+
+void TimelineView::paintCurve(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
+                              juce::Rectangle<int> area)
 {
     const auto vertices = automationVertices(clip, timing, param, area);
     juce::Path line;

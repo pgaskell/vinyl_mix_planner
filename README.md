@@ -54,7 +54,9 @@ Needs macOS 11 or later, on Apple Silicon or Intel.
 - A timeline with a lane per deck, 3-band waveforms and beat lines for matching by eye
 - Pitch, nudge and EQ by ear while the mix plays, the way you would on the decks
 - Tempo and key detection, with the key shown after pitch in standard or Camelot notation
-- Automation for pitch, volume, EQ and a COLOR filter through each transition
+- Automation for pitch, volume, EQ and a COLOR filter through each transition, drawn by hand or
+  recorded by playing the mix on the on-screen mixer (Latch), adjusted afterwards (Trim, Trim All),
+  or just practised (Override)
 - Plays through your laptop, or one deck per channel into a club mixer (e.g. Pioneer DJM-900)
 - Follows a Pioneer DJM-900SRT over USB MIDI and shows its fader and EQ positions on screen
 - Checks for things you can't do live, like two records on one deck or no time to change records

@@ -12,33 +12,37 @@
 
 ## Automation
 
-- **Record moves made with the mouse.** Today a control only writes a keypoint at the playhead if
-  it already has keypoints. Add a record (arm) button. While it's armed and playing, dragging the
-  volume slider or an EQ knob writes keypoints, touch-style:
-  - while the control is held, its moves replace the keypoints already there;
-  - on release, the control returns to the existing curve;
-  - the moves are thinned afterwards.
-  
-  Build it as one recorder with two inputs, the mouse and hardware MIDI (see "Record mixer moves"
-  below), so arming, replacing and thinning are written once.
+- **Recording, next steps.** Mouse moves are recorded or trimmed (Override/Latch/Trim/Trim All button,
+  `core/MixRecorder`, `edit::writeRecordedPass`/`writeTrimmedPass`/`trimAutomation`): latched, thinned, placed at the
+  playhead minus the output latency.
+  - Write mode, with MIDI input: every control of the hardware mixer written from the start of
+    playback, touched or not.
+  - Trim: check the amounts per turn (24 dB for volume and EQ, 4 octaves of COLOR scale) feel right; maybe
+    double-click to reset a trim to none while playing.
+  - Feed the DJM's MIDI moves into the same recorder (see "Record mixer moves" below).
+  - Tune `kRecordingTolerance` (1% of the range) by eye on real takes.
+  - Pitch moves aren't recorded; pitch changes while playing still go through `withFollowers`.
 
 ## Mixer and decks UI
 
-- **Trim, next steps.** Trim is in (per clip, -9 to +9 dB, follows the DJM's TRIM knobs).
-  - The DJM's own trim runs from off to +9 dB; the basic mixer maps the knob to -9..+9. Measure
-    the DJM's law when emulating it.
+- **Trim, next steps.** Trim is in (per clip, follows the DJM's TRIM knobs). The basic mixer maps
+  the knob to -20..-4 dB, -12 dB at the centre, so faders can sit fully up (as most Pioneer DJs
+  play) without the internal mix clipping.
+  - The DJM's own trim runs from off to +9 dB. Measure the DJM's law when emulating it, and keep
+    the headroom somewhere (a master level) so the emulation doesn't clip where the basic mixer
+    doesn't.
   - Automate it, if it turns out to be needed.
   - Suggest a trim from each track's loudness, measured during analysis.
+- **Clipping marks on the ruler**, like the glitch marks: where the internal mix went past full
+  scale while playing (the engine reports the mix peak per block; record the position too), and
+  where an export clipped (`BounceResult` counts clipped samples; keep their positions, merged
+  into stretches). Click one to jump there, a little before. Clear them with the clip light.
 - **Mixer that looks like a mixer.**
   - Strip order as on the DJM, top to bottom: trim, HI, MID, LOW, COLOR, fader (in place now).
   - Bigger EQ knobs, drawn as real knobs (a cap, a pointer, the centre detent marked) in a
     LookAndFeel, rather than the default JUCE rotary.
-  - Move the pitch out of the channel strip. It's a turntable control, not a mixer control, and it
-    is easy to confuse with the volume fader beside it at the same size. It could go:
-    - beside each deck's lane;
-    - in deck panels either side of the mixer, like turntables flanking it.
-
-    Keep it long and vertical, + at the bottom, like a 1200.
+  - The pitch fader is beside each lane now (`PitchFader`); at the Small lane height it's short.
+    If that's a problem, a horizontal fader or a number to drag there.
   - The blue hardware marks have to keep working on the new controls.
 - **Deck info to the right of each lane** (to be clarified): what the deck is playing at the
   playhead: title, playing BPM, key after pitch, pitch %, time remaining.

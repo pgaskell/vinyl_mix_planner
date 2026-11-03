@@ -260,6 +260,7 @@ void MixExporter::finished(const juce::String& title, const juce::String& messag
     });
     if (title.isEmpty())
         return;
+    juce::Logger::writeToLog("Export: " + title + ". " + message.replace("\n\n", " "));
     juce::AlertWindow::showAsync(juce::MessageBoxOptions()
                                      .withIconType(warning ? juce::MessageBoxIconType::WarningIcon
                                                            : juce::MessageBoxIconType::InfoIcon)

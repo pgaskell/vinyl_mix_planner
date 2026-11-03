@@ -18,13 +18,41 @@ float MixerChannel::eqGain(double knob)
 float MixerChannel::trimGain(double knob)
 {
     knob = std::clamp(knob, 0.0, 1.0);
-    return static_cast<float>(std::pow(10.0, (knob - 0.5) * 2.0 * 9.0 / 20.0));
+    return static_cast<float>(std::pow(10.0, (kTrimCentreDb + (knob - 0.5) * 2.0 * kTrimRangeDb) / 20.0));
 }
 
 float MixerChannel::faderGain(double position)
 {
     position = std::clamp(position, 0.0, 1.0);
     return static_cast<float>(position * position); // -12 dB at half way
+}
+
+double MixerChannel::trimmed(Param param, double position, double amount)
+{
+    position = std::clamp(position, 0.0, 1.0);
+    const double offsetDb = kTrimDbPerTurn * amount;
+    switch (param)
+    {
+    case Param::Volume: // gain is position squared
+        return std::clamp(position * std::pow(10.0, offsetDb / 40.0), 0.0, 1.0);
+    case Param::High:
+    case Param::Mid:
+    case Param::Low:
+    {
+        const double gain = eqGain(position);
+        if (gain <= 0.0)
+            return 0.0;
+        const double dB = std::min(20.0 * std::log10(gain) + offsetDb, 6.0);
+        if (dB > 0.0)
+            return 0.5 + dB / 12.0;
+        return std::cbrt(std::pow(10.0, dB / 20.0)) / 2.0;
+    }
+    case Param::Color:
+        return std::clamp(0.5 + (position - 0.5) * std::exp2(kTrimColorOctaves * amount), 0.0, 1.0);
+    case Param::Pitch:
+        break;
+    }
+    return position;
 }
 
 std::optional<MixerChannel::ColorFilter> MixerChannel::colorFilter(double knob)
@@ -45,6 +73,10 @@ void MixerChannel::prepare(double sampleRate)
     sampleRate_ = sampleRate;
     for (auto& b : bands_)
         b.design(kLowMidCrossoverHz, kMidHighCrossoverHz, sampleRate);
+    // Start from the default settings, so the first block doesn't glide in from unity gain.
+    const ChannelSettings neutral;
+    applied_ = {eqGain(neutral.low), eqGain(neutral.mid), eqGain(neutral.high), faderGain(neutral.fader),
+                trimGain(neutral.trim)};
     reset();
 }
 
