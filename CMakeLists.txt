@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Big Sur is the oldest macOS that runs on Apple Silicon.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
-project(VinylMixPlanner VERSION 0.3.0 LANGUAGES C CXX)
+project(VinylMixPlanner VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,7 @@ set_source_files_properties(src/core/Analysis.cpp src/core/Waveform.cpp PROPERTI
 # --- Engine: real-time audio, no JUCE dependency ----------------------------
 
 add_library(vmp_engine STATIC
+    src/engine/Bounce.cpp
     src/engine/Deck.cpp
     src/engine/Engine.cpp
     src/engine/MixerChannel.cpp
@@ -84,6 +85,7 @@ target_sources(VinylMixPlanner PRIVATE
     src/app/Main.cpp
     src/app/MainComponent.cpp
     src/app/MidiMonitor.cpp
+    src/app/MixExporter.cpp
     src/app/MixerPanel.cpp
     src/app/TimelineView.cpp)
 
@@ -115,6 +117,7 @@ if(VMP_BUILD_TESTS)
 
     add_executable(vmp_tests
         tests/AnalysisTests.cpp
+        tests/BounceTests.cpp
         tests/DeckTests.cpp
         tests/EditsTests.cpp
         tests/EngineTests.cpp

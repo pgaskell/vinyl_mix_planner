@@ -136,6 +136,22 @@ std::unique_ptr<StreamedAudio> StreamedAudio::open(const std::filesystem::path& 
     return audio;
 }
 
+std::unique_ptr<StreamedAudio> StreamedAudio::openAgain() const
+{
+    const int fd = ::fcntl(fd_, F_DUPFD_CLOEXEC, 0); // the same file, even if it has been replaced since
+    if (fd < 0)
+        return nullptr;
+    std::unique_ptr<StreamedAudio> audio(new StreamedAudio);
+    audio->fd_ = fd;
+    audio->frames_ = frames_;
+    audio->sampleRate_ = sampleRate_;
+    audio->numChunks_ = numChunks_;
+    audio->chunks_ = std::make_unique<std::atomic<const float*>[]>(static_cast<size_t>(numChunks_));
+    for (int64_t i = 0; i < numChunks_; ++i)
+        audio->chunks_[static_cast<size_t>(i)].store(nullptr);
+    return audio;
+}
+
 StreamedAudio::~StreamedAudio()
 {
     if (fd_ >= 0)

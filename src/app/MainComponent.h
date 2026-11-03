@@ -10,6 +10,7 @@
 #include "app/IssuesPanel.h"
 #include "app/LibraryPanel.h"
 #include "app/MidiMonitor.h"
+#include "app/MixExporter.h"
 #include "app/MixerPanel.h"
 #include "app/SplitterBar.h"
 #include "app/TimelineView.h"
@@ -78,6 +79,9 @@ private:
     // Turns on the MIDI inputs of mixers we know, including ones plugged in later.
     void enableMixerMidiInputs();
     void updateHardwareMixer();
+    // In the internal mix, the hardware mixer's faders, trims, EQ and COLOR play the decks (not saved in the set).
+    bool controlsInternalMix() const;
+    void applyHardwareControls();
 
     std::optional<double> addFile(const juce::File& file, int deck, double start);
     void addFileAtPlayhead(const juce::File& file);
@@ -170,6 +174,7 @@ private:
 
     juce::ScopedMessageBox messageBox_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    MixExporter exporter_{settings_};
 
     juce::CriticalSection midiLock_;
     struct MixerMidi
@@ -181,6 +186,7 @@ private:
     std::vector<MixerMidi> pendingMixerMidi_; // guarded by midiLock_
     // The hardware mixer the audio device is (direct out), followed from its MIDI.
     std::optional<HardwareMixer> hardwareMixer_;
+    bool hardwareControl_ = true;
     juce::MidiDeviceListConnection midiDevices_;
 };
 

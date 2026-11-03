@@ -1,5 +1,7 @@
 #include "app/MixerPanel.h"
 
+#include "app/DeckColours.h"
+
 #include "core/Edits.h"
 #include "core/Pitch.h"
 #include "engine/MixerChannel.h"
@@ -23,15 +25,26 @@ juce::String gainText(float gain)
         return "kill";
     return juce::String::formatted("%+.1f", 20.0 * std::log10(gain) + 0.0);
 }
+
+juce::String colorText(double knob)
+{
+    const auto filter = MixerChannel::colorFilter(knob);
+    if (!filter)
+        return "off";
+    const juce::String hz = filter->hz >= 1000.0 ? juce::String(filter->hz / 1000.0, 1) + " kHz"
+                                                 : juce::String(juce::roundToInt(filter->hz)) + " Hz";
+    return (filter->type == FilterType::LowPass ? "LPF " : "HPF ") + hz;
+}
 } // namespace
 
 // --- ChannelStrip -----------------------------------------------------------
 
 ChannelStrip::ChannelStrip(int deck, SetDocument& document, std::function<double()> playhead)
-    : document_(document), playhead_(std::move(playhead))
+    : document_(document), playhead_(std::move(playhead)), colour_(deckColour(deck))
 {
     deckLabel_.setText("Deck " + juce::String(deck + 1), juce::dontSendNotification);
     deckLabel_.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+    deckLabel_.setColour(juce::Label::textColourId, colour_);
     deckLabel_.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(deckLabel_);
     addAndMakeVisible(meter_);
@@ -52,11 +65,34 @@ ChannelStrip::ChannelStrip(int deck, SetDocument& document, std::function<double
                                       std::tuple{&low_, &lowLabel_, Param::Low}})
     {
         setUpControl(*knob, *label, param);
+        knob->textFromValueFunction = [](double v) { return gainText(MixerChannel::eqGain(v)) + " dB"; };
+    }
+    setUpControl(color_, colorLabel_, Param::Color);
+    color_.textFromValueFunction = colorText;
+    color_.setTooltip("Color: a filter for now. Left is a low-pass, right a high-pass; off at the centre.");
+
+    // Not automated: one level for the whole clip.
+    trim_.setWantsKeyboardFocus(false);
+    trim_.onDragStart = [this] { document_.beginGesture(); };
+    trim_.onDragEnd = [this] { document_.endGesture(); };
+    trim_.onValueChange = [this] {
+        const Id id = clip_;
+        document_.edit([&](Set& s) { return edit::setClipTrim(s, id, trim_.getValue()); });
+    };
+    trim_.textFromValueFunction = [](double v) { return gainText(MixerChannel::trimGain(v)) + " dB"; };
+    trim_.setTooltip("Trim: the record's input level, -9 to +9 dB. One setting for the whole clip.");
+    addAndMakeVisible(trim_);
+    trimLabel_.setText("Trim", juce::dontSendNotification);
+    trimLabel_.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+    trimLabel_.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(trimLabel_);
+
+    for (auto* knob : {&trim_, &high_, &mid_, &low_, &color_})
+    {
         knob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         knob->setRange(0.0, 1.0);
         knob->setDoubleClickReturnValue(true, 0.5);
         knob->setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
-        knob->textFromValueFunction = [](double v) { return gainText(MixerChannel::eqGain(v)) + " dB"; };
         knob->setPopupDisplayEnabled(true, true, nullptr);
     }
 
@@ -68,6 +104,7 @@ ChannelStrip::ChannelStrip(int deck, SetDocument& document, std::function<double
         [](double, double, double value) { return (8.0 - value) / 16.0; },
         [](double, double, double value) { return std::round(value / kPitchStepPercent) * kPitchStepPercent; }));
     pitch_.setDoubleClickReturnValue(true, 0.0);
+    pitch_.setColour(juce::Slider::trackColourId, colour_);
     pitch_.setTextBoxStyle(juce::Slider::TextBoxBelow, true, 46, 16);
     pitch_.textFromValueFunction = [](double v) { return juce::String::formatted("%+.2f", v + 0.0); };
     pitch_.valueFromTextFunction = [](const juce::String& s) { return s.retainCharacters("+-.0123456789").getDoubleValue(); };
@@ -117,14 +154,14 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
     const Set& set = document_.set();
     const Clip* clip = set.findClip(clipId);
     const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
-    for (auto* c : std::initializer_list<juce::Component*>{&pitch_, &volume_, &high_, &mid_, &low_})
+    for (auto* c : std::initializer_list<juce::Component*>{&pitch_, &volume_, &trim_, &high_, &mid_, &low_, &color_})
         c->setEnabled(track != nullptr);
     title_.setText(track != nullptr ? title : "-", juce::dontSendNotification);
     key_.setText(key, juce::dontSendNotification);
     if (track == nullptr)
     {
         // Nothing on this deck here: neutral and greyed out, not the last clip's values.
-        for (auto* slider : {&pitch_, &volume_, &high_, &mid_, &low_})
+        for (auto* slider : {&pitch_, &volume_, &trim_, &high_, &mid_, &low_, &color_})
         {
             slider->setColour(juce::Slider::thumbColourId, getLookAndFeel().findColour(juce::Slider::thumbColourId));
             slider->setColour(juce::Slider::rotarySliderFillColourId,
@@ -132,7 +169,7 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
         }
         pitch_.setValue(0.0, juce::dontSendNotification);
         volume_.setValue(1.0, juce::dontSendNotification);
-        for (auto* knob : {&high_, &mid_, &low_})
+        for (auto* knob : {&trim_, &high_, &mid_, &low_, &color_})
             knob->setValue(0.5, juce::dontSendNotification);
         return;
     }
@@ -152,11 +189,14 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
         if (!slider.isMouseButtonDown()) // don't fight the user's drag
             slider.setValue(value, juce::dontSendNotification);
     };
+    if (!trim_.isMouseButtonDown())
+        trim_.setValue(clip->mixer.trim, juce::dontSendNotification);
     showValue(pitch_, Param::Pitch, (timing.speedAt(t) - 1.0) * 100.0);
     showValue(volume_, Param::Volume, valueAt(*clip, Param::Volume, frame));
     showValue(high_, Param::High, valueAt(*clip, Param::High, frame));
     showValue(mid_, Param::Mid, valueAt(*clip, Param::Mid, frame));
     showValue(low_, Param::Low, valueAt(*clip, Param::Low, frame));
+    showValue(color_, Param::Color, valueAt(*clip, Param::Color, frame));
 }
 
 void ChannelStrip::showHardware(const std::optional<HardwareView>& view)
@@ -195,8 +235,9 @@ void ChannelStrip::paintOverChildren(juce::Graphics& g)
     }
 
     // A tick across the knob's arc, placed as LookAndFeel_V4 draws it.
-    for (auto [knob, value] : {std::pair{&high_, hardware_->high}, std::pair{&mid_, hardware_->mid},
-                               std::pair{&low_, hardware_->low}})
+    for (auto [knob, value] : {std::pair{&trim_, hardware_->trim}, std::pair{&high_, hardware_->high},
+                               std::pair{&mid_, hardware_->mid}, std::pair{&low_, hardware_->low},
+                               std::pair{&color_, hardware_->color}})
     {
         if (!value)
             continue;
@@ -218,6 +259,8 @@ void ChannelStrip::paint(juce::Graphics& g)
     g.fillAll(juce::Colour(0xff23262b));
     g.setColour(juce::Colour(0xff3a3e45));
     g.drawRect(getLocalBounds());
+    g.setColour(colour_);
+    g.fillRect(getLocalBounds().removeFromTop(3));
 }
 
 void ChannelStrip::resized()
@@ -230,8 +273,10 @@ void ChannelStrip::resized()
     key_.setBounds(area.removeFromTop(16));
     area.removeFromTop(4);
 
-    const int knobHeight = std::min(60, area.getHeight() / 7);
-    for (auto [knob, label] : {std::pair{&high_, &highLabel_}, std::pair{&mid_, &midLabel_}, std::pair{&low_, &lowLabel_}})
+    const int knobHeight = std::min(60, area.getHeight() / 9);
+    for (auto [knob, label] : {std::pair{&trim_, &trimLabel_}, std::pair{&high_, &highLabel_},
+                               std::pair{&mid_, &midLabel_}, std::pair{&low_, &lowLabel_},
+                               std::pair{&color_, &colorLabel_}})
     {
         label->setBounds(area.removeFromTop(14));
         knob->setBounds(area.removeFromTop(knobHeight - 14));
@@ -309,9 +354,11 @@ void MixerPanel::showHardware(const HardwareMixer* mixer, const std::array<int, 
             const auto& state = mixer->channel(channel);
             const juce::String name = "CH" + juce::String(channel + 1);
             view.fader = state.fader;
+            view.trim = state.trim;
             view.high = state.high;
             view.mid = state.mid;
             view.low = state.low;
+            view.color = state.color;
             if (state.input == MixerInput::Usb)
             {
                 view.route = "> " + name + " USB";
@@ -334,6 +381,36 @@ void MixerPanel::showHardware(const HardwareMixer* mixer, const std::array<int, 
                 view.tooltip << " To see its controls here, turn on the mixer's MIDI (ON/OFF button) and hold "
                                 "START/STOP for a second.";
         }
+        strips_[d]->showHardware(view);
+    }
+}
+
+void MixerPanel::showHardwareControl(const HardwareMixer& mixer)
+{
+    const juce::String mixerName(mixer.profile().name);
+    for (size_t d = 0; d < kMaxDecks; ++d)
+    {
+        if (d >= mixer.profile().channels.size())
+        {
+            strips_[d]->showHardware(std::nullopt);
+            continue;
+        }
+        const auto& state = mixer.channel(static_cast<int>(d));
+        const juce::String name = "CH" + juce::String(static_cast<int>(d) + 1);
+        ChannelStrip::HardwareView view;
+        view.fader = state.fader;
+        view.trim = state.trim;
+        view.high = state.high;
+        view.mid = state.mid;
+        view.low = state.low;
+        view.color = state.color;
+        view.route = "< " + name;
+        view.tooltip = "The " + mixerName + "'s " + name +
+                       " fader, trim, EQ and COLOR play this deck, shown by the blue marks. The set keeps its own "
+                       "values; turn this off in the Audio menu.";
+        if (!state.fader && !state.high)
+            view.tooltip << " Nothing has arrived yet: turn on the mixer's MIDI (ON/OFF button) and hold "
+                            "START/STOP for a second to send every position.";
         strips_[d]->showHardware(view);
     }
 }

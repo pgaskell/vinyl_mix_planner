@@ -32,6 +32,10 @@ public:
 
     // Opens a cache file; nothing if it's missing, damaged or the wrong size.
     static std::unique_ptr<StreamedAudio> open(const std::filesystem::path& file);
+    // The same file again, with its own (empty) set of loaded chunks, so a second prefetcher (an
+    // offline bounce) can stream it without disturbing this one. Nothing if the file can't be
+    // reopened.
+    std::unique_ptr<StreamedAudio> openAgain() const;
 
     ~StreamedAudio();
     StreamedAudio(const StreamedAudio&) = delete;

@@ -1,5 +1,6 @@
 #include "app/TimelineView.h"
 
+#include "app/DeckColours.h"
 #include "app/LibraryPanel.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
@@ -38,6 +39,8 @@ juce::Colour paramColour(Param param)
         return juce::Colour(0xffffa31a);
     case Param::Low:
         return juce::Colour(0xff4f8cff);
+    case Param::Color:
+        return juce::Colour(0xffff7ac8);
     }
     return juce::Colours::white;
 }
@@ -50,20 +53,13 @@ const juce::Colour kHighColour{0xfff4f4f4};
 const juce::Colour kBackground{0xff1b1d21};
 const juce::Colour kLaneBackground{0xff23262b};
 const juce::Colour kRulerBackground{0xff2c3036};
-const juce::Colour kDeckColours[] = {juce::Colour(0xff4fa3d9), juce::Colour(0xffd98f4f), juce::Colour(0xff69c27a),
-                                     juce::Colour(0xffc06fd0)};
-
-juce::Colour deckColour(int deck)
-{
-    return kDeckColours[static_cast<size_t>(std::clamp(deck, 0, kMaxDecks - 1))];
-}
 } // namespace
 
 TimelineView::TimelineView(SetDocument& document, AudioPool& pool, Engine& engine, const DisplayOptions& display)
     : document_(document), pool_(pool), engine_(engine), display_(display)
 {
     setWantsKeyboardFocus(true);
-    static const char* const kShortNames[] = {"Pitch", "Vol", "Hi", "Mid", "Low"};
+    static const char* const kShortNames[] = {"Pitch", "Vol", "Hi", "Mid", "Low", "Color"};
     for (int d = 0; d < kMaxDecks; ++d)
         for (int p = 0; p < kNumParams; ++p)
         {
@@ -121,7 +117,7 @@ std::vector<std::pair<double, double>> TimelineView::mixes() const
 
 void TimelineView::resized()
 {
-    // Check boxes under the deck name: Pitch and Vol in the first column, Hi/Mid/Low in the second.
+    // Check boxes under the deck name: Pitch, Vol and Color in the first column, Hi/Mid/Low in the second.
     constexpr int kRow = 17;
     for (int d = 0; d < kMaxDecks; ++d)
     {
@@ -132,7 +128,8 @@ void TimelineView::resized()
         {
             auto& toggle = toggles_[static_cast<size_t>(d)][static_cast<size_t>(p)];
             toggle.setVisible(visible);
-            const int col = p < 2 ? 0 : 1, row = p < 2 ? p : p - 2;
+            const bool first = p < 2 || static_cast<Param>(p) == Param::Color;
+            const int col = first ? 0 : 1, row = p < 2 ? p : first ? 2 : p - 2;
             toggle.setBounds(header.getX() + col * column, header.getY() + row * kRow, column, kRow);
         }
     }
@@ -464,7 +461,6 @@ void TimelineView::paint(juce::Graphics& g)
         g.fillRect(lane.reduced(0, 1));
         g.setColour(deckColour(d));
         g.fillRect(lane.getX(), lane.getY() + 1, 4, lane.getHeight() - 2);
-        g.setColour(juce::Colours::white);
         g.setFont(laneFont_);
         g.drawText("Deck " + juce::String(d + 1), lane.withWidth(kHeaderWidth).withTrimmedLeft(10).withHeight(26),
                    juce::Justification::centredLeft);
@@ -1007,9 +1003,8 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
     const Hit hit = clipAt(e.position);
     if (hit.clip == 0)
     {
+        // Only the ruler moves the playhead: a stray click in a lane shouldn't lose your place.
         setSelectedClip(0);
-        if (e.x >= kHeaderWidth)
-            engine_.seek(std::max(0.0, xToTime(e.x)));
         return;
     }
 

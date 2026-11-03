@@ -47,7 +47,44 @@ Engine::Engine() : seekRequest_(kNoSeek), clock_(steadyNanoseconds)
     {
         decks_[i] = std::make_unique<Deck>();
         deckOutputs_[i].store(static_cast<int>(i) * 2); // deck 1 -> 1/2, deck 2 -> 3/4, ...
+        for (auto& control : liveControls_[i])
+            control.store(std::numeric_limits<float>::quiet_NaN());
     }
+}
+
+static_assert(static_cast<int>(Param::Color) - static_cast<int>(Param::Volume) == 4, "liveControls_ order");
+
+void Engine::setLiveControl(int deck, Param param, std::optional<double> position)
+{
+    if (deck < 0 || deck >= kMaxDecks || param == Param::Pitch)
+        return;
+    const auto index = static_cast<size_t>(param) - static_cast<size_t>(Param::Volume);
+    liveControls_[static_cast<size_t>(deck)][index].store(
+        position ? static_cast<float>(std::clamp(*position, 0.0, 1.0)) : std::numeric_limits<float>::quiet_NaN());
+}
+
+void Engine::setLiveTrim(int deck, std::optional<double> position)
+{
+    if (deck < 0 || deck >= kMaxDecks)
+        return;
+    liveControls_[static_cast<size_t>(deck)][kLiveTrim].store(
+        position ? static_cast<float>(std::clamp(*position, 0.0, 1.0)) : std::numeric_limits<float>::quiet_NaN());
+}
+
+ChannelSettings Engine::withLiveControls(ChannelSettings settings, size_t deck) const
+{
+    auto take = [&](double& field, size_t index) {
+        const float live = liveControls_[deck][index].load(std::memory_order_relaxed);
+        if (!std::isnan(live))
+            field = live;
+    };
+    take(settings.fader, 0);
+    take(settings.high, 1);
+    take(settings.mid, 2);
+    take(settings.low, 3);
+    take(settings.color, 4);
+    take(settings.trim, kLiveTrim);
+    return settings;
 }
 
 void Engine::setDeckOutput(int deckIndex, int firstPhysicalChannel)
@@ -273,7 +310,7 @@ void Engine::renderChunk(const Schedule* schedule, bool playing, float* const* o
     {
         renderLane(schedule->lanes[d], d, position_, numFrames);
         if (!direct)
-            channels_[d].process(laneMixer_[d], deckLeft_[d].data(), deckRight_[d].data(), numFrames);
+            channels_[d].process(withLiveControls(laneMixer_[d], d), deckLeft_[d].data(), deckRight_[d].data(), numFrames);
         notePeak(deckPeaks_[d], deckLeft_[d].data(), deckRight_[d].data(), numFrames);
     }
 

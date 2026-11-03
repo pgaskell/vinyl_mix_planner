@@ -44,6 +44,8 @@ const char* paramName(Param param)
         return "Mid";
     case Param::Low:
         return "Low";
+    case Param::Color:
+        return "Color";
     }
     return "?";
 }
@@ -62,6 +64,8 @@ double baseValue(const Clip& clip, Param param)
         return clip.mixer.mid;
     case Param::Low:
         return clip.mixer.low;
+    case Param::Color:
+        return clip.mixer.color;
     }
     return 0.0;
 }
@@ -90,7 +94,8 @@ double valueAt(const Clip& clip, Param param, double sourceFrame)
 ChannelSettings mixerAt(const Clip& clip, double sourceFrame)
 {
     return {valueAt(clip, Param::Volume, sourceFrame), valueAt(clip, Param::High, sourceFrame),
-            valueAt(clip, Param::Mid, sourceFrame), valueAt(clip, Param::Low, sourceFrame)};
+            valueAt(clip, Param::Mid, sourceFrame), valueAt(clip, Param::Low, sourceFrame), clip.mixer.trim,
+            valueAt(clip, Param::Color, sourceFrame)};
 }
 
 // --- ClipTiming -------------------------------------------------------------

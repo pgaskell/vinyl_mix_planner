@@ -6,14 +6,16 @@ namespace vmp
 namespace
 {
 const juce::Colour kPanelColour{0xff23262b};
+constexpr int kMaxResults = 1000; // more are pointless to scroll through, and slow to list
 
 class FileItem final : public juce::TreeViewItem
 {
 public:
-    FileItem(LibraryTree& tree, juce::File file) : tree_(tree), file_(std::move(file)), folder_(file_.isDirectory())
+    FileItem(LibraryTree& tree, juce::File file) : FileItem(tree, file, file.getFileName(), file.isDirectory()) {}
+    FileItem(LibraryTree& tree, juce::File file, juce::String name, bool folder)
+        : tree_(tree), file_(std::move(file)), name_(std::move(name)), folder_(folder)
     {
-        const auto name = file_.getFileName();
-        width_ = kIconWidth + juce::roundToInt(juce::GlyphArrangement::getStringWidth(tree_.font(), name)) + 12;
+        width_ = kIconWidth + juce::roundToInt(juce::GlyphArrangement::getStringWidth(tree_.font(), name_)) + 12;
     }
 
     const juce::File& file() const { return file_; }
@@ -78,7 +80,7 @@ public:
         }
         g.setColour(juce::Colours::white.withAlpha(folder_ ? 1.0f : 0.85f));
         g.setFont(tree_.font());
-        g.drawText(file_.getFileName(), area.withTrimmedLeft(2), juce::Justification::centredLeft, false);
+        g.drawText(name_, area.withTrimmedLeft(2), juce::Justification::centredLeft, false);
     }
 
     void itemDoubleClicked(const juce::MouseEvent&) override
@@ -96,8 +98,16 @@ private:
     static constexpr int kIconWidth = 20;
     LibraryTree& tree_;
     juce::File file_;
+    juce::String name_;
     bool folder_;
     int width_;
+};
+
+// The hidden root of a search's results.
+class ResultsItem final : public juce::TreeViewItem
+{
+public:
+    bool mightContainSubItems() override { return true; }
 };
 
 void collectSelected(juce::TreeViewItem& item, juce::Array<juce::File>& files, const LibraryTree& tree)
@@ -130,10 +140,33 @@ LibraryTree::~LibraryTree()
 
 void LibraryTree::setRoot(const juce::File& folder)
 {
+    folder_ = folder;
+    folderOpenness_.reset();
     setRootItem(nullptr);
     root_ = std::make_unique<FileItem>(*this, folder);
     setRootItem(root_.get());
     root_->setOpen(true);
+}
+
+void LibraryTree::showFiles(const juce::Array<juce::File>& files)
+{
+    if (folderOpenness_ == nullptr)
+        folderOpenness_ = getOpennessState(true);
+    setRootItem(nullptr);
+    root_ = std::make_unique<ResultsItem>();
+    for (const auto& file : files)
+        root_->addSubItem(new FileItem(*this, file, file.getRelativePathFrom(folder_), false));
+    setRootItem(root_.get());
+    root_->setOpen(true);
+}
+
+void LibraryTree::showFolders()
+{
+    if (folderOpenness_ == nullptr)
+        return; // already showing them
+    const auto openness = std::move(folderOpenness_);
+    setRoot(folder_);
+    restoreOpennessState(*openness, true);
 }
 
 bool LibraryTree::isAudioFile(const juce::File& file) const
@@ -151,8 +184,47 @@ juce::Array<juce::File> LibraryTree::selectedFiles() const
 
 // --- LibraryPanel -----------------------------------------------------------
 
+class LibraryPanel::Scanner final : public juce::Thread
+{
+public:
+    Scanner(LibraryPanel& owner, juce::File root, juce::String wildcard)
+        : juce::Thread("Library scan"), owner_(&owner), root_(std::move(root)), wildcard_(std::move(wildcard))
+    {
+        startThread();
+    }
+    ~Scanner() override { stopThread(10000); }
+
+    const juce::File& root() const { return root_; }
+
+private:
+    void run() override
+    {
+        auto index = std::make_shared<LibraryIndex>();
+        index->root = root_;
+        for (const auto& entry : juce::RangedDirectoryIterator(root_, true, wildcard_,
+                                                               juce::File::findFiles | juce::File::ignoreHiddenFiles))
+        {
+            if (threadShouldExit())
+                return;
+            const auto& file = entry.getFile();
+            index->entries.push_back({file, file.getRelativePathFrom(root_).toLowerCase()});
+        }
+        std::sort(index->entries.begin(), index->entries.end(), [](const auto& a, const auto& b) {
+            return a.lowerPath.compareNatural(b.lowerPath) < 0;
+        });
+        juce::MessageManager::callAsync([owner = owner_, index = std::shared_ptr<const LibraryIndex>(std::move(index))] {
+            if (owner != nullptr)
+                owner->indexScanned(index);
+        });
+    }
+
+    juce::Component::SafePointer<LibraryPanel> owner_;
+    juce::File root_;
+    juce::String wildcard_;
+};
+
 LibraryPanel::LibraryPanel(AudioPool& pool, juce::PropertiesFile& settings)
-    : settings_(settings), tree_(pool.formats())
+    : settings_(settings), tree_(pool.formats()), formats_(pool.formats())
 {
     tree_.onFileDoubleClicked = [this](const juce::File& file) {
         if (onFileDoubleClicked)
@@ -176,15 +248,110 @@ LibraryPanel::LibraryPanel(AudioPool& pool, juce::PropertiesFile& settings)
     rootLabel_.setMinimumHorizontalScale(0.5f);
     addAndMakeVisible(rootLabel_);
 
+    searchBox_.setTextToShowWhenEmpty("Search", juce::Colours::grey);
+    searchBox_.setFont(juce::FontOptions(13.0f));
+    searchBox_.onTextChange = [this] { updateResults(); };
+    searchBox_.onReturnKey = [this] {
+        if (onSearchDone)
+            onSearchDone();
+    };
+    searchBox_.onEscapeKey = [this] {
+        searchBox_.setText({}, false);
+        updateResults();
+        if (onSearchDone)
+            onSearchDone();
+    };
+    addAndMakeVisible(searchBox_);
+
+    searchStatus_.setFont(juce::FontOptions(11.0f));
+    searchStatus_.setColour(juce::Label::textColourId, juce::Colours::grey);
+    addChildComponent(searchStatus_);
+
     const juce::File saved(settings_.getValue("libraryRoot"));
     setRoot(saved.isDirectory() ? saved : juce::File::getSpecialLocation(juce::File::userMusicDirectory));
 }
 
+LibraryPanel::~LibraryPanel() = default;
+
 void LibraryPanel::setRoot(const juce::File& folder)
 {
+    scanner_.reset();
+    index_.reset();
+    searchBox_.setText({}, false);
+    updateResults();
     tree_.setRoot(folder);
     rootLabel_.setText(folder.getFullPathName(), juce::dontSendNotification);
     settings_.setValue("libraryRoot", folder.getFullPathName());
+}
+
+void LibraryPanel::startScan()
+{
+    if (scanner_ != nullptr && scanner_->isThreadRunning() && scanner_->root() == tree_.folder())
+        return;
+    scanner_.reset();
+    scanner_ = std::make_unique<Scanner>(*this, tree_.folder(), formats_.getWildcardForAllFormats());
+}
+
+void LibraryPanel::indexScanned(std::shared_ptr<const LibraryIndex> index)
+{
+    if (index->root != tree_.folder())
+        return;
+    const auto unchanged = index_ != nullptr && index_->entries.size() == index->entries.size() &&
+                           std::equal(index->entries.begin(), index->entries.end(), index_->entries.begin(),
+                                      [](const auto& a, const auto& b) { return a.file == b.file; });
+    index_ = std::move(index);
+    if (!unchanged) // rebuilding the list would lose the selection
+        updateResults();
+}
+
+void LibraryPanel::updateResults()
+{
+    const auto query = searchBox_.getText().trim();
+    const auto starting = lastQuery_.isEmpty();
+    lastQuery_ = query;
+    if (query.isEmpty())
+    {
+        tree_.showFolders();
+        if (searchStatus_.isVisible())
+        {
+            searchStatus_.setVisible(false);
+            resized();
+        }
+        return;
+    }
+    if (starting)
+        startScan(); // picks up changes on disk since the last search
+    if (!searchStatus_.isVisible())
+    {
+        searchStatus_.setVisible(true);
+        resized();
+    }
+    if (index_ == nullptr)
+    {
+        tree_.showFiles({});
+        searchStatus_.setText("Scanning folder...", juce::dontSendNotification);
+        return;
+    }
+
+    auto words = juce::StringArray::fromTokens(query.toLowerCase(), true);
+    words.removeEmptyStrings();
+    juce::Array<juce::File> matches;
+    int count = 0;
+    for (const auto& entry : index_->entries)
+    {
+        if (std::all_of(words.begin(), words.end(), [&](const auto& w) { return entry.lowerPath.contains(w); }))
+        {
+            if (++count <= kMaxResults)
+                matches.add(entry.file);
+        }
+    }
+    tree_.showFiles(matches);
+    searchStatus_.setText(count == 0                ? juce::String("No matches")
+                          : count == 1              ? juce::String("1 file")
+                          : count <= kMaxResults ? juce::String(count) + " files"
+                                                    : "First " + juce::String(kMaxResults) + " of " +
+                                                          juce::String(count) + " files",
+                          juce::dontSendNotification);
 }
 
 void LibraryPanel::paint(juce::Graphics& g)
@@ -197,6 +364,10 @@ void LibraryPanel::resized()
     auto area = getLocalBounds().reduced(6);
     chooseButton_.setBounds(area.removeFromTop(26));
     rootLabel_.setBounds(area.removeFromTop(20));
+    area.removeFromTop(2);
+    searchBox_.setBounds(area.removeFromTop(24));
+    if (searchStatus_.isVisible())
+        searchStatus_.setBounds(area.removeFromTop(18));
     area.removeFromTop(4);
     tree_.setBounds(area);
 }

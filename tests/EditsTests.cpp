@@ -191,6 +191,11 @@ TEST_CASE("Pitch and mixer values are clamped to the hardware's range")
     CHECK(onlyClip(set).pitchSteps == kMaxPitchSteps);
     REQUIRE(edit::setClipMixer(set, id, {1.5, -0.2, 0.5, 0.25}));
     CHECK(onlyClip(set).mixer == ChannelSettings{1.0, 0.0, 0.5, 0.25});
+    REQUIRE(edit::setClipMixer(set, id, {1.0, 0.5, 0.5, 0.5, 0.5, -1.0}));
+    CHECK(onlyClip(set).mixer.color == 0.0);
+    REQUIRE(edit::setClipTrim(set, id, 1.2));
+    CHECK(onlyClip(set).mixer.trim == 1.0);
+    CHECK_FALSE(edit::setClipTrim(set, id + 99, 0.5));
 }
 
 TEST_CASE("Decks can't be removed while clips are on them")

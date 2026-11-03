@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <numbers>
@@ -99,6 +100,42 @@ public:
 
 private:
     LR4 low1_, high1_, low2_, high2_, lowAllpassLow_, lowAllpassHigh_;
+};
+
+// 2-pole state-variable filter (Zavalishin's topology-preserving transform), which stays stable
+// and quiet while its cutoff and Q are swept.
+struct Svf
+{
+    float a1 = 1, a2 = 0, a3 = 0, k = 1.414f;
+    float ic1 = 0, ic2 = 0;
+
+    void design(double frequency, double q, double sampleRate)
+    {
+        const double g = std::tan(std::numbers::pi * std::min(frequency, 0.45 * sampleRate) / sampleRate);
+        k = static_cast<float>(1.0 / q);
+        a1 = static_cast<float>(1.0 / (1.0 + g * (g + k)));
+        a2 = static_cast<float>(g) * a1;
+        a3 = static_cast<float>(g) * a2;
+    }
+
+    void reset() { ic1 = ic2 = 0.0f; }
+    // Settled as if `x` had been the input for a while, so switching the filter in doesn't click:
+    // a low-pass then outputs x, a high-pass 0 (from silence).
+    void settle(float x, FilterType type)
+    {
+        ic1 = 0.0f;
+        ic2 = type == FilterType::LowPass ? x : 0.0f;
+    }
+
+    float process(float x, FilterType type)
+    {
+        const float v3 = x - ic2;
+        const float v1 = a1 * ic1 + a2 * v3;
+        const float v2 = ic2 + a2 * ic1 + a3 * v3;
+        ic1 = 2.0f * v1 - ic1;
+        ic2 = 2.0f * v2 - ic2;
+        return type == FilterType::LowPass ? v2 : x - k * v1 - v2;
+    }
 };
 
 } // namespace vmp

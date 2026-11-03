@@ -46,6 +46,8 @@ const char* paramKey(Param param)
         return "mid";
     case Param::Low:
         return "low";
+    case Param::Color:
+        return "color";
     }
     return "?";
 }
@@ -105,7 +107,12 @@ std::string setToJson(const Set& set)
                          {"pitchSteps", c.pitchSteps},
                          {"automation", automation},
                          {"mixer",
-                          {{"fader", c.mixer.fader}, {"high", c.mixer.high}, {"mid", c.mixer.mid}, {"low", c.mixer.low}}}});
+                          {{"fader", c.mixer.fader},
+                           {"high", c.mixer.high},
+                           {"mid", c.mixer.mid},
+                           {"low", c.mixer.low},
+                           {"trim", c.mixer.trim},
+                           {"color", c.mixer.color}}}});
     }
 
     const json doc = {{"format", kFormatName},
@@ -200,7 +207,8 @@ Set setFromJson(const std::string& text)
                 }
             const auto& mixer = c.at("mixer");
             clip.mixer = {mixer.at("fader").get<double>(), mixer.at("high").get<double>(),
-                          mixer.at("mid").get<double>(), mixer.at("low").get<double>()};
+                          mixer.at("mid").get<double>(), mixer.at("low").get<double>(),
+                          mixer.value("trim", 0.5), mixer.value("color", 0.5)}; // saved before trim/color: centred
             set.clips.push_back(std::move(clip));
         }
 

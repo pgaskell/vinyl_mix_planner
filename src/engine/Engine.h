@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace vmp
@@ -66,6 +67,13 @@ public:
     void setMasterOutput(int firstPhysicalChannel) { masterOutput_.store(firstPhysicalChannel); }
     int masterOutput() const { return masterOutput_.load(); }
 
+    // A hardware controller's position for a deck's fader, EQ or COLOR knob (any Param but Pitch),
+    // which replaces the set's value, automation included, in the internal mix. nullopt hands the
+    // control back to the set. The set itself is not changed.
+    void setLiveControl(int deck, Param param, std::optional<double> position);
+    // The same for the trim knob, which isn't an automated Param.
+    void setLiveTrim(int deck, std::optional<double> position);
+
     // Frees schedules the audio thread has finished with.
     void collectGarbage() { schedule_.collectGarbage(); }
 
@@ -96,6 +104,15 @@ public:
     // physicalToBuffer[ch] is the buffer index for physical output ch, or -1 if disabled.
     void prepare(double sampleRate, int maxBlockFrames, std::vector<int> physicalToBuffer);
 
+    // Before the first render, on the thread that will render: play from full level, without the
+    // fade-in that keeps a mid-record start from clicking. For an offline bounce, which starts at a
+    // needle drop.
+    void playWithoutFade()
+    {
+        transportGain_ = 1.0f;
+        play();
+    }
+
     // --- Audio thread ------------------------------------------------------
     void render(float* const* outputs, int numOutputs, int numFrames);
 
@@ -103,6 +120,7 @@ private:
     void renderChunk(const Schedule* schedule, bool playing, float* const* outputs, int numOutputs, int offset,
                      int numFrames);
     void renderLane(const std::vector<ScheduledClip>& lane, size_t deck, double start, int numFrames);
+    ChannelSettings withLiveControls(ChannelSettings settings, size_t deck) const;
     bool audioLoaded(const Schedule* schedule, double start, int numFrames) const;
     float* outputFor(float* const* outputs, int numOutputs, int physicalChannel) const;
 
@@ -113,6 +131,9 @@ private:
     std::atomic<OutputMode> mode_{OutputMode::InternalMix};
     std::array<std::atomic<int>, kMaxDecks> deckOutputs_;
     std::atomic<int> masterOutput_{0};
+    // Volume, High, Mid, Low, Color, trim per deck; NaN when the set's value applies.
+    static constexpr size_t kLiveTrim = 5;
+    std::array<std::array<std::atomic<float>, 6>, kMaxDecks> liveControls_;
     SpscQueue<Glitch, 256> glitches_;
     std::atomic<uint64_t> renderCounter_{0};
     std::atomic<float> peakLoad_{0.0f};

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace vmp
 {
@@ -44,6 +45,23 @@ inline double speedFromPitchSteps(double steps)
 inline double pitchStepsFromSpeed(double speed)
 {
     return (speed - 1.0) * 100.0 / kPitchStepPercent;
+}
+
+// The pitch that plays a record of `recordBpm` at `playingBpm`: the exact percent, and the
+// nearest step, which is nullopt when that's beyond the fader's ±8%.
+inline double pitchPercentForTempo(double recordBpm, double playingBpm)
+{
+    return (playingBpm / recordBpm - 1.0) * 100.0;
+}
+
+inline std::optional<int> pitchStepsForTempo(double recordBpm, double playingBpm)
+{
+    if (!(recordBpm > 0.0) || !(playingBpm > 0.0))
+        return std::nullopt;
+    const double steps = std::round(pitchPercentForTempo(recordBpm, playingBpm) / kPitchStepPercent);
+    if (std::abs(steps) > kMaxPitchSteps)
+        return std::nullopt;
+    return static_cast<int>(steps);
 }
 
 // How far the musical key moves at a given speed: +6% is roughly +1 semitone.

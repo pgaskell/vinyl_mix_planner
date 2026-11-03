@@ -46,13 +46,15 @@ struct Track
 
 // Mixer channel controls, stored as positions (0..1) as on the hardware rather than as gains.
 // The mixer model decides what a position sounds like, so a set planned with one mixer can be
-// played back through another. EQ knobs: 0.5 is the centre detent.
+// played back through another. EQ and trim knobs: 0.5 is the centre detent.
 struct ChannelSettings
 {
     double fader = 1.0;
     double high = 0.5;
     double mid = 0.5;
     double low = 0.5;
+    double trim = 0.5; // the input gain, per clip so each record keeps its own level; not automated
+    double color = 0.5; // Sound Color FX knob; for now a filter: low-pass to the left, high-pass to the right
 
     bool operator==(const ChannelSettings&) const = default;
 };
@@ -64,9 +66,10 @@ enum class Param
     Volume, // channel fader position, 0..1
     High,   // EQ knob positions, 0..1, centre 0.5
     Mid,
-    Low
+    Low,
+    Color // 0..1, centre 0.5 (off)
 };
-inline constexpr int kNumParams = 5;
+inline constexpr int kNumParams = 6;
 
 struct ParamRange
 {

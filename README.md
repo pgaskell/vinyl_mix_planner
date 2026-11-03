@@ -54,10 +54,11 @@ Needs macOS 11 or later, on Apple Silicon or Intel.
 - A timeline with a lane per deck, 3-band waveforms and beat lines for matching by eye
 - Pitch, nudge and EQ by ear while the mix plays, the way you would on the decks
 - Tempo and key detection, with the key shown after pitch in standard or Camelot notation
-- Automation for pitch, volume and EQ through each transition
+- Automation for pitch, volume, EQ and a COLOR filter through each transition
 - Plays through your laptop, or one deck per channel into a club mixer (e.g. Pioneer DJM-900)
 - Follows a Pioneer DJM-900SRT over USB MIDI and shows its fader and EQ positions on screen
 - Checks for things you can't do live, like two records on one deck or no time to change records
+- Exports the finished mix to WAV, AIFF, FLAC or Ogg Vorbis
 
 ## Where it's going
 
@@ -70,8 +71,7 @@ Needs macOS 11 or later, on Apple Silicon or Intel.
   auditioning the next transitions on headphones while the set plays.
 - **A performance guide** for playing the plan on real turntables: what's next, the pitch
   setting, and countdowns to each needle drop and mixer move.
-- **More mixers:** DJM-900NXS2 emulation, including its effects; exporting the mix to an audio
-  file.
+- **More mixers:** DJM-900NXS2 emulation, including its effects.
 
 The thinking behind these is in [docs/USE_CASES.md](docs/USE_CASES.md), and the work list is in
 [TODO.md](TODO.md).

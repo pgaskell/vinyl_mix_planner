@@ -7,6 +7,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <functional>
 
 namespace vmp
 {
@@ -17,7 +18,7 @@ class Inspector : public juce::Component
 {
 public:
     Inspector(SetDocument& document, AudioPool& pool, const DisplayOptions& display,
-              juce::ApplicationCommandManager& commands);
+              juce::ApplicationCommandManager& commands, std::function<double()> playhead);
 
     // Height that shows everything.
     static constexpr int kPreferredHeight = 380;
@@ -34,6 +35,7 @@ public:
 private:
     void setUpCommandButton(juce::TextButton& button, juce::CommandID command, const juce::String& tooltip);
     void applyBpm(const juce::String& text);
+    void applyPlayingBpm(const juce::String& text);
     void applyKey();
     juce::String harmonyText(const Clip& clip, const Track& track, juce::Colour& colour) const;
 
@@ -41,6 +43,7 @@ private:
     AudioPool& pool_;
     const DisplayOptions& display_;
     juce::ApplicationCommandManager& commands_;
+    std::function<double()> playhead_;
     Id clip_ = 0;
     struct CommandButton
     {

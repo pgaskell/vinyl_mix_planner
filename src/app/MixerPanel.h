@@ -16,7 +16,8 @@
 namespace vmp
 {
 
-// One deck's controls: pitch fader (+ at the bottom, like a 1200), Hi/Mid/Low and volume.
+// One deck's controls: trim, Hi/Mid/Low, Color, pitch fader (+ at the bottom, like a 1200) and volume.
+// The trim is one value per clip; the others can be automated.
 // They show the values at the playhead, so automation moves them during playback. Turning one
 // sets the clip's starting value, or, once that control has keypoints, writes one at the
 // playhead. Controls with keypoints are drawn in their automation colour.
@@ -35,7 +36,7 @@ public:
     {
         juce::String route, tooltip;
         bool warning = false; // the deck can't be heard on the mixer
-        std::optional<double> fader, high, mid, low;
+        std::optional<double> fader, trim, high, mid, low, color;
         bool operator==(const HardwareView&) const = default;
     };
     void showHardware(const std::optional<HardwareView>& view);
@@ -50,12 +51,13 @@ private:
 
     SetDocument& document_;
     std::function<double()> playhead_;
+    juce::Colour colour_; // the deck's
     Id clip_ = 0;
 
     juce::Label deckLabel_, title_, key_, routeLabel_;
     std::optional<HardwareView> hardware_;
-    juce::Slider pitch_, volume_, high_, mid_, low_;
-    juce::Label pitchLabel_, volumeLabel_, highLabel_, midLabel_, lowLabel_;
+    juce::Slider pitch_, volume_, trim_, high_, mid_, low_, color_;
+    juce::Label pitchLabel_, volumeLabel_, trimLabel_, highLabel_, midLabel_, lowLabel_, colorLabel_;
     LevelMeter meter_;
 };
 
@@ -74,6 +76,8 @@ public:
                     double elapsedSeconds);
     // The hardware mixer's state, with each deck's output pair (-1: none), or nullptr to hide it.
     void showHardware(const HardwareMixer* mixer, const std::array<int, kMaxDecks>& deckPairs);
+    // The internal mix, played from the hardware mixer's controls: channel n plays deck n.
+    void showHardwareControl(const HardwareMixer& mixer);
 
     // Width needed for this many decks.
     static int preferredWidth(int numDecks);

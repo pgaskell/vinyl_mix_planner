@@ -57,7 +57,7 @@ DJM-900NXS2, and generic Core Audio devices).
 - Audio thread: no locks, no allocation, no freeing. Controls are atomics; whole objects
   (tracks) go through the pending/retired hand-off in `Deck`.
 - Store positions in source-file frames, not seconds after pitch. Timeline is in seconds; no tempo grid.
-- Automation: per clip, per control (pitch, volume, hi, mid, low). The clip's starting value is a fixed
+- Automation: per clip, per control (pitch, volume, hi, mid, low, color). Trim is per clip, not automated. The clip's starting value is a fixed
   point at the needle drop; keypoints (anchored to source frames, i.e. the music) follow, linear between
   points; keypoints before the in-point are ignored. Trimming the start carries automated values into the
   starting values (pitch may become fractional steps). Pitch slides are linear in time (PitchCurve).

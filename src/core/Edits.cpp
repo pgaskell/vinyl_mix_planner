@@ -70,6 +70,8 @@ double& mixerValue(ChannelSettings& m, Param param)
         return m.mid;
     case Param::Low:
         return m.low;
+    case Param::Color:
+        return m.color;
     case Param::Volume:
     case Param::Pitch:
         break;
@@ -316,7 +318,17 @@ bool setClipMixer(Set& set, Id clipId, const ChannelSettings& settings)
     Clip* clip = findClip(set, clipId);
     if (clip == nullptr)
         return false;
-    clip->mixer = {clamp01(settings.fader), clamp01(settings.high), clamp01(settings.mid), clamp01(settings.low)};
+    clip->mixer = {clamp01(settings.fader), clamp01(settings.high), clamp01(settings.mid), clamp01(settings.low),
+                   clamp01(settings.trim), clamp01(settings.color)};
+    return true;
+}
+
+bool setClipTrim(Set& set, Id clipId, double trim)
+{
+    Clip* clip = findClip(set, clipId);
+    if (clip == nullptr)
+        return false;
+    clip->mixer.trim = clamp01(trim);
     return true;
 }
 

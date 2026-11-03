@@ -32,7 +32,8 @@ Set makeSet()
     clip.pitchSteps = -37;
     clip.points(Param::Pitch) = {{2000000, 12.0}, {3000000, -160.0}};
     clip.points(Param::Low) = {{2000000, 0.0}, {2100000, 0.5}};
-    clip.mixer = {0.8, 0.0, 0.5, 0.6125};
+    clip.mixer = {0.8, 0.0, 0.5, 0.6125, 0.3, 0.2};
+    clip.points(Param::Color) = {{2500000, 0.9}};
     set.clips.push_back(clip);
 
     set.nextId = 4;
@@ -115,6 +116,8 @@ TEST_CASE("Version 1 sets still open")
     REQUIRE(set.clips.size() == 1);
     CHECK(set.clips[0].pitchSteps == 50); // 1% in the old 0.05% steps is 50 of today's
     CHECK(set.clips[0].mixer.low == 0.25);
+    CHECK(set.clips[0].mixer.trim == 0.5); // from before trim and color: centred
+    CHECK(set.clips[0].mixer.color == 0.5);
     CHECK(set.clips[0].points(Param::Pitch).empty());
 }
 

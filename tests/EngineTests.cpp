@@ -138,6 +138,47 @@ TEST_CASE("Internal mix applies each clip's fader and EQ")
     }
 }
 
+TEST_CASE("Live controls replace a deck's fader and EQ in the internal mix until handed back")
+{
+    Fixture f;
+    const Id a = f.addClip(makeSine(80.0, kRate, 10.0), 0, 0.0);
+    edit::setClipMixer(f.set, a, {0.0, 0.5, 0.5, 0.5}); // the set has the fader down
+    f.engine.setOutputMode(OutputMode::InternalMix);
+    f.publish();
+    f.engine.play();
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.01f);
+
+    f.engine.setLiveControl(0, Param::Volume, 1.0);
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f).epsilon(0.05)); // the tone's own level
+
+    f.engine.setLiveControl(0, Param::Low, 0.0); // the low kill takes out the 80 Hz tone
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.025f);
+
+    f.engine.setLiveControl(0, Param::Low, std::nullopt);
+    f.engine.setLiveControl(0, Param::Color, 1.0); // the high-pass takes out the 80 Hz tone
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.01f);
+    f.engine.setLiveControl(0, Param::Color, std::nullopt);
+
+    f.engine.setLiveTrim(0, 0.0); // -9 dB
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * 0.3548f).epsilon(0.05));
+
+    f.engine.setLiveControl(0, Param::Volume, std::nullopt);
+    f.engine.setLiveTrim(0, std::nullopt);
+    f.engine.setLiveControl(0, Param::Pitch, 1.0); // not a mixer control: ignored
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) < 0.01f);
+}
+
+TEST_CASE("A clip's trim sets its level before the EQ and fader")
+{
+    Fixture f;
+    const Id a = f.addClip(makeSine(1000.0, kRate, 10.0), 0, 0.0);
+    edit::setClipMixer(f.set, a, {1.0, 0.5, 0.5, 0.5, 0.75}); // +4.5 dB
+    f.engine.setOutputMode(OutputMode::InternalMix);
+    f.publish();
+    f.engine.play();
+    CHECK(peak(slice(f.run(1.0)[0], 0.5, 1.0, kRate)) == Approx(0.5f * 1.6788f).epsilon(0.05));
+}
+
 TEST_CASE("Direct out sends each deck dry to its own pair")
 {
     Fixture f;

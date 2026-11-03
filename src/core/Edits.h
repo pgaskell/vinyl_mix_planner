@@ -37,6 +37,8 @@ bool trimClipEnd(Set& set, Id clipId, double newEndSeconds);
 bool setClipPitch(Set& set, Id clipId, int pitchSteps, std::optional<double> pivotSeconds = std::nullopt);
 
 bool setClipMixer(Set& set, Id clipId, const ChannelSettings& settings);
+// The clip's trim knob (0..1, centre 0.5). One value for the whole clip.
+bool setClipTrim(Set& set, Id clipId, double trim);
 
 // --- Automation. Values are clamped to the control's range; pitch to whole steps. ---
 

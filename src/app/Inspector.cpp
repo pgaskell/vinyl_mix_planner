@@ -35,8 +35,8 @@ void setCaption(juce::Label& label, const juce::String& text)
 } // namespace
 
 Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOptions& display,
-                     juce::ApplicationCommandManager& commands)
-    : document_(document), pool_(pool), display_(display), commands_(commands)
+                     juce::ApplicationCommandManager& commands, std::function<double()> playhead)
+    : document_(document), pool_(pool), display_(display), commands_(commands), playhead_(std::move(playhead))
 {
     title_.setFont(juce::FontOptions(15.0f, juce::Font::bold));
     title_.setMinimumHorizontalScale(0.6f);
@@ -58,6 +58,18 @@ Inspector::Inspector(SetDocument& document, AudioPool& pool, const DisplayOption
     bpm_.setJustificationType(juce::Justification::centred);
     bpm_.onTextChange = [this] { applyBpm(bpm_.getText()); };
     addAndMakeVisible(bpm_);
+    tempo_.setEditable(false, true);
+    tempo_.setTooltip("Tempo as it plays, after pitch. Double-click to type the BPM it should play at: "
+                      "the pitch is set to the nearest step.");
+    tempo_.onEditorShow = [this] {
+        // Edit just the number, not the words around it.
+        if (auto* editor = tempo_.getCurrentTextEditor())
+        {
+            editor->setText(tempo_.getText().retainCharacters(".0123456789"), false);
+            editor->selectAll();
+        }
+    };
+    tempo_.onTextChange = [this] { applyPlayingBpm(tempo_.getText()); };
     setUpCommandButton(halve_, kGridHalve, "Halve the BPM");
     setUpCommandButton(double_, kGridDouble, "Double the BPM");
     setUpCommandButton(gridEarlier_, kGridEarlier, "Move the beat grid 2 ms earlier");
@@ -253,6 +265,46 @@ void Inspector::applyBpm(const juce::String& text)
     const BeatGrid grid{bpm, current ? current->firstBeatSeconds : 0.0};
     const Id trackId = track->id;
     if (!document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, grid); }))
+        refresh();
+}
+
+void Inspector::applyPlayingBpm(const juce::String& text)
+{
+    const Clip* clip = document_.set().findClip(clip_);
+    const Track* track = clip != nullptr ? document_.set().findTrack(clip->trackId) : nullptr;
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    const double target = text.retainCharacters(".0123456789").getDoubleValue();
+    if (!grid || target <= 0.0)
+    {
+        refresh();
+        return;
+    }
+    const auto steps = pitchStepsForTempo(grid->bpm, target);
+    if (!steps)
+    {
+        // Refuse rather than clamp: the DJ should know the record can't get there.
+        const double percent = pitchPercentForTempo(grid->bpm, target);
+        const double past = std::abs(percent) - kMaxPitchSteps * kPitchStepPercent;
+        juce::AlertWindow::showAsync(
+            juce::MessageBoxOptions()
+                .withIconType(juce::MessageBoxIconType::WarningIcon)
+                .withTitle("Out of the pitch range")
+                .withMessage("Playing at " + juce::String(target, 2) + " BPM needs " +
+                             juce::String::formatted("%+.2f", percent) + "% pitch, " + juce::String(past, 2) +
+                             "% beyond the fader's +/-8%.\n\nThe record plays from " +
+                             juce::String(grid->bpm * 0.92, 2) + " to " + juce::String(grid->bpm * 1.08, 2) + " BPM.")
+                .withButton("OK"),
+            nullptr);
+        refresh();
+        return;
+    }
+    // Like the pitch fader: the music at the playhead stays put, and the records mixed in after
+    // this one keep up. With pitch automation this sets the starting pitch.
+    const Id id = clip->id;
+    const double playhead = playhead_();
+    if (!document_.edit([&](Set& s) {
+            return edit::withFollowers(s, id, [&](Set& t) { return edit::setClipPitch(t, id, *steps, playhead); });
+        }))
         refresh();
 }
 

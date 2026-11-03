@@ -14,6 +14,7 @@ namespace
 // Menu item ids outside the command range.
 constexpr int kMenuModeInternal = 1001;
 constexpr int kMenuModeDirect = 1002;
+constexpr int kMenuHardwareControl = 1003;
 constexpr int kMenuMasterBase = 2000; // + first channel; kMenuMasterBase + 999 is "None"
 constexpr int kMenuDeckBase = 3000;   // + deck * 100 + first channel; + 99 is "None"
 constexpr int kMenuDecksBase = 4000;  // + number of decks
@@ -36,7 +37,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
                                 .getChildFile("Library/Caches/org.vinylmixplanner.app/Audio"),
             juce::int64{std::clamp(settings.getIntValue("decodeCacheGB", 10), 1, 1000)} << 30),
       timeline_(document_, pool_, engine_, display_),
-      inspector_(document_, pool_, display_, commands_),
+      inspector_(document_, pool_, display_, commands_, [this] { return engine_.playheadSeconds(); }),
       mixer_(document_, pool_, display_, [this] { return engine_.playheadSeconds(); }),
       library_(pool_, settings)
 {
@@ -58,6 +59,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     // --- Panels ---
     addAndMakeVisible(timeline_);
     timeline_.setShowsBeatGuides(settings_.getBoolValue("beatGuides", true));
+    hardwareControl_ = settings_.getBoolValue("hardwareControl", true);
     timeline_.onSelectionChanged = [this](Id id) {
         inspector_.setClip(id);
         commands_.commandStatusChanged();
@@ -81,6 +83,7 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
         addFileAtPlayhead(file);
         timeline_.grabKeyboardFocus();
     };
+    library_.onSearchDone = [this] { timeline_.grabKeyboardFocus(); };
 
     issues_.onIssueClicked = [this](Id clip) {
         timeline_.setSelectedClip(clip);
@@ -301,8 +304,12 @@ void MainComponent::timerCallback()
         mixerMidi.swap(pendingMixerMidi_);
     }
     for (const auto& m : mixerMidi)
-        if (hardwareMixer_ && &hardwareMixer_->profile() == m.profile)
-            hardwareMixer_->handle(m.data.data(), m.data.size());
+    {
+        if (!hardwareMixer_ || &hardwareMixer_->profile() != m.profile)
+            hardwareMixer_.emplace(*m.profile);
+        hardwareMixer_->handle(m.data.data(), m.data.size());
+    }
+    applyHardwareControls();
     if (hardwareMixer_ && engine_.outputMode() == OutputMode::DirectOut)
     {
         std::array<int, kMaxDecks> pairs{};
@@ -313,9 +320,36 @@ void MainComponent::timerCallback()
         }
         mixer_.showHardware(&*hardwareMixer_, pairs);
     }
+    else if (controlsInternalMix())
+    {
+        mixer_.showHardwareControl(*hardwareMixer_);
+    }
     else
     {
         mixer_.showHardware(nullptr, {});
+    }
+}
+
+bool MainComponent::controlsInternalMix() const
+{
+    return hardwareMixer_ && hardwareControl_ && engine_.outputMode() == OutputMode::InternalMix;
+}
+
+void MainComponent::applyHardwareControls()
+{
+    // Channel n controls deck n. Only controls the mixer has reported (moved, or sent in a
+    // snapshot) take over; the rest keep the set's values.
+    const bool on = controlsInternalMix();
+    for (int d = 0; d < kMaxDecks; ++d)
+    {
+        const bool has = on && d < static_cast<int>(hardwareMixer_->profile().channels.size());
+        const auto state = has ? hardwareMixer_->channel(d) : HardwareMixer::ChannelState{};
+        engine_.setLiveControl(d, Param::Volume, state.fader);
+        engine_.setLiveControl(d, Param::High, state.high);
+        engine_.setLiveControl(d, Param::Mid, state.mid);
+        engine_.setLiveControl(d, Param::Low, state.low);
+        engine_.setLiveControl(d, Param::Color, state.color);
+        engine_.setLiveTrim(d, state.trim);
     }
 }
 
@@ -411,12 +445,18 @@ void MainComponent::enableMixerMidiInputs()
         if (findMixerProfile(input.name.toStdString()) != nullptr &&
             !deviceManager_.isMidiInputDeviceEnabled(input.identifier))
             deviceManager_.setMidiInputDeviceEnabled(input.identifier, true);
+    updateHardwareMixer();
 }
 
 void MainComponent::updateHardwareMixer()
 {
-    auto* device = deviceManager_.getCurrentAudioDevice();
-    const auto* profile = device != nullptr ? findMixerProfile(device->getName().toStdString()) : nullptr;
+    // A mixer plugged in over USB shows up as a MIDI input, whichever audio device is playing.
+    const MixerProfile* profile = nullptr;
+    for (const auto& input : juce::MidiInput::getAvailableDevices())
+        if ((profile = findMixerProfile(input.name.toStdString())) != nullptr)
+            break;
+    if (auto* device = deviceManager_.getCurrentAudioDevice(); profile == nullptr && device != nullptr)
+        profile = findMixerProfile(device->getName().toStdString());
     if (profile == nullptr)
         hardwareMixer_.reset();
     else if (!hardwareMixer_ || &hardwareMixer_->profile() != profile)
@@ -841,6 +881,11 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         define("Save As...", "Save the set to a new file", "File");
         key('s', cmd | shift);
         break;
+    case kExportMix:
+        define("Export Mix...", "Render the internal mix to an audio file (WAV, AIFF, FLAC or Ogg Vorbis)", "File",
+               !document_.set().clips.empty() && !exporter_.isRunning());
+        key('e', cmd);
+        break;
     case kUndo:
         define("Undo", "Undo the last change", "Edit", document_.canUndo());
         key('z', cmd);
@@ -1075,6 +1120,14 @@ bool MainComponent::perform(const InvocationInfo& info)
         break;
     case kSaveAs:
         save(true);
+        break;
+    case kExportMix:
+        exporter_.start(buildSchedule(document_.set(), [this](const Track& track) {
+                            const auto* entry = pool_.find(track.path);
+                            return entry != nullptr && entry->status == AudioPool::Status::Ready ? entry->audio
+                                                                                                 : nullptr;
+                        }),
+                        file_ != juce::File() ? file_.getFileNameWithoutExtension() : juce::String("Mix"));
         break;
     case kUndo:
         document_.undo();
@@ -1314,6 +1367,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         add({kNew, kOpen});
         menu.addSeparator();
         add({kSave, kSaveAs});
+        menu.addSeparator();
+        add({kExportMix});
         break;
     case 1:
         add({kUndo, kRedo});
@@ -1350,6 +1405,10 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         const bool direct = engine_.outputMode() == OutputMode::DirectOut;
         menu.addItem(kMenuModeInternal, "Internal Mix (laptop)", true, !direct);
         menu.addItem(kMenuModeDirect, "Direct Out (hardware mixer)", true, direct);
+        menu.addItem(kMenuHardwareControl,
+                     hardwareMixer_ ? "Mix with the " + juce::String(hardwareMixer_->profile().name) + "'s Controls"
+                                    : juce::String("Mix with a Hardware Mixer's Controls"),
+                     hardwareMixer_.has_value() && !direct, hardwareControl_);
         menu.addSeparator();
 
         juce::PopupMenu decks;
@@ -1399,6 +1458,12 @@ void MainComponent::menuItemSelected(int itemId, int)
     if (itemId == kMenuModeInternal || itemId == kMenuModeDirect)
     {
         setOutputMode(itemId == kMenuModeDirect ? OutputMode::DirectOut : OutputMode::InternalMix);
+    }
+    else if (itemId == kMenuHardwareControl)
+    {
+        hardwareControl_ = !hardwareControl_;
+        settings_.setValue("hardwareControl", hardwareControl_);
+        menuItemsChanged();
     }
     else if (itemId >= kMenuMasterBase && itemId < kMenuDeckBase)
     {
