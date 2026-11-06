@@ -58,6 +58,25 @@ juce::Path iconPath(Icon icon)
             .createStrokedPath(p, outline);
         break;
     }
+    case Icon::MouseHelp:
+    {
+        // A pointer, and an "i" in a ring below and to its right.
+        p.startNewSubPath(1.0f, 0.5f);
+        p.lineTo(1.0f, 10.5f);
+        p.lineTo(3.4f, 8.3f);
+        p.lineTo(5.0f, 12.0f);
+        p.lineTo(6.6f, 11.3f);
+        p.lineTo(5.0f, 7.6f);
+        p.lineTo(8.4f, 7.6f);
+        p.closeSubPath();
+        juce::Path circle, ring;
+        circle.addEllipse(8.0f, 8.0f, 7.5f, 7.5f);
+        juce::PathStrokeType(1.3f).createStrokedPath(ring, circle);
+        p.addPath(ring);
+        p.addEllipse(11.1f, 9.7f, 1.3f, 1.3f);
+        p.addRectangle(11.15f, 11.6f, 1.2f, 2.6f);
+        break;
+    }
     }
     return p;
 }

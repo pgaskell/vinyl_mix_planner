@@ -9,8 +9,10 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_events/juce_events.h>
 
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -75,6 +77,12 @@ public:
     std::optional<BeatGrid> gridFor(const Track& track) const;
     std::optional<MusicalKey> keyFor(const Track& track) const;
 
+    // Runs `fit` on a loaded track's analysis signal (analysisSignal) on a background thread, then
+    // `done` on the message thread with what it found (nothing if the track isn't loaded). The
+    // last track's signal is kept, so fitting it again is quick.
+    using GridFit = std::function<std::optional<BeatGrid>(const std::vector<float>& mono, double sampleRate)>;
+    void fitGrid(const std::string& path, GridFit fit, std::function<void(std::optional<BeatGrid>)> done);
+
 private:
     void finished(const std::string& path, Entry entry, bool analysed);
 
@@ -83,6 +91,10 @@ private:
     std::atomic<juce::int64> cacheLimit_;
     juce::AudioFormatManager formats_;
     std::map<std::string, Entry> entries_;
+    std::mutex signalMutex_; // the last signal fitGrid used, shared by its jobs
+    std::string signalPath_;
+    std::shared_ptr<const std::vector<float>> signal_;
+    double signalRate_ = 0.0;
     juce::ThreadPool pool_{2}; // declared after formats_ so jobs finish before it goes
 
     JUCE_DECLARE_WEAK_REFERENCEABLE(AudioPool)

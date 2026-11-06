@@ -216,7 +216,7 @@ void ChannelStrip::show(Id clipId, double playhead, const juce::String& title, c
     }
 
     // Values at the playhead, or at the nearer end of the clip when the playhead is outside it.
-    const ClipTiming timing(*clip, *track);
+    const ClipTiming& timing = *document_.timing(clipId);
     const double t = std::clamp(playhead, timing.startSeconds(), timing.endSeconds());
     const double frame = timing.sourceFrameAt(t);
 
@@ -408,11 +408,14 @@ void MixerPanel::showHardware(const HardwareMixer* mixer, const std::array<int, 
             view.mid = state.mid;
             view.low = state.low;
             view.color = state.color;
-            if (state.input == MixerInput::Usb)
+            const auto& profile = mixer->profile();
+            if (isUsbInput(state.input))
             {
-                view.route = "> " + name + " USB";
-                view.tooltip = "Plays on " + name + " of the " + mixerName +
-                               ". The blue marks show where its controls are.";
+                view.route = "> " + name + " " + mixerInputName(state.input, profile.twoUsbPorts);
+                view.tooltip = "Plays on " + name + " of the " + mixerName;
+                if (profile.twoUsbPorts)
+                    view.tooltip << " if this Mac is on its " << mixerInputName(state.input, true) << " port";
+                view.tooltip << ". The blue marks show where its controls are.";
             }
             else if (state.input == MixerInput::Unknown)
             {
@@ -421,14 +424,17 @@ void MixerPanel::showHardware(const HardwareMixer* mixer, const std::array<int, 
             }
             else
             {
-                view.route = name + " on " + mixerInputName(state.input);
+                view.route = name + " on " + mixerInputName(state.input, profile.twoUsbPorts);
                 view.warning = true;
                 view.tooltip = "Plays on " + name + " of the " + mixerName +
                                ", but its input selector isn't on USB: you won't hear it.";
             }
             if (!state.fader && !state.high)
-                view.tooltip << " To see its controls here, turn on the mixer's MIDI (ON/OFF button) and hold "
-                                "START/STOP for a second.";
+                view.tooltip << (profile.snapshotKnown
+                                     ? " To see its controls here, turn on the mixer's MIDI (ON/OFF button) and "
+                                       "hold START/STOP for a second."
+                                     : " To see its controls here, turn on the mixer's MIDI (ON/OFF button) and "
+                                       "move them, or try holding START/STOP for a second.");
         }
         strips_[d]->showHardware(view);
     }
@@ -480,7 +486,7 @@ void MixerPanel::update(Id selectedClip, double playhead, bool playing)
 
     for (int d = 0; d < set.numDecks; ++d)
     {
-        const Clip* chosen = set.findClip(clipForDeck(set, d, selectedClip, playhead, playing));
+        const Clip* chosen = set.findClip(clipForDeck(document_, d, selectedClip, playhead, playing));
 
         juce::String title, key;
         if (chosen != nullptr)
@@ -489,7 +495,7 @@ void MixerPanel::update(Id selectedClip, double playhead, bool playing)
             title = juce::CharPointer_UTF8(track.title.c_str());
             if (const auto k = pool_.keyFor(track))
             {
-                const ClipTiming timing(*chosen, track);
+                const ClipTiming& timing = *document_.timing(chosen->id);
                 key = pitchedKeyText(*k, timing.speedAt(std::clamp(playhead, timing.startSeconds(), timing.endSeconds())),
                                      display_.keyNotation);
             }

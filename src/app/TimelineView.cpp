@@ -26,6 +26,21 @@ constexpr float kKeypointGrab = 6.0f;
 constexpr int kTitleHeight = 18;
 constexpr float kLineGrab = 5.0f;
 
+// Nudges: pushes (the record sped up, its music earlier) and platter drags (held back).
+const juce::Colour kPushColour{0xff35d6e8};
+const juce::Colour kDragColour{0xffb07cff};
+constexpr int kNudgeStrip = 14; // the deck action lane, along the bottom of each clip
+constexpr int kPinHandle = 9; // a beat pin's handle, at the top of the waveform
+constexpr float kBeatGrabPixels = 5.0f;
+const juce::Colour kPinColour(0xffffc04d);
+const juce::Colour kLinkColour(0xff6cf08a);
+// While a hand is on a record, its touch is written this far ahead of what's heard.
+constexpr double kTouchLeadSeconds = 0.25;
+// A press on a playing record takes hold of it after this long, or once moved this far; a quicker
+// click only selects it.
+constexpr double kTouchDelaySeconds = 0.15;
+constexpr int kTouchDragPixels = 4;
+
 juce::Colour paramColour(Param param)
 {
     switch (param)
@@ -50,6 +65,10 @@ juce::Colour paramColour(Param param)
 const juce::Colour kLowColour{0xff2a6cf0};
 const juce::Colour kMidColour{0xffffa31a};
 const juce::Colour kHighColour{0xfff4f4f4};
+// The trim that draws a full-scale record to the lane's edge (4 dB above the centre), so the
+// waveform's height shows the record's level after its trim: louder ones fill the lane and
+// flatten at the edge, quieter ones shrink. At the centre a record peaks at 63% of the height.
+constexpr double kWaveformFullTrim = 0.75;
 
 const juce::Colour kBackground{0xff1b1d21};
 const juce::Colour kLaneBackground{0xff23262b};
@@ -103,9 +122,8 @@ TimelineView::TimelineView(SetDocument& document, AudioPool& pool, Engine& engin
 
 void TimelineView::updatePitchFaders(bool playing)
 {
-    const Set& set = document_.set();
     for (int d = 0; d < numDecks(); ++d)
-        pitchFaders_[static_cast<size_t>(d)]->show(clipForDeck(set, d, selected_, playhead_, playing), playhead_);
+        pitchFaders_[static_cast<size_t>(d)]->show(clipForDeck(document_, d, selected_, playhead_, playing), playhead_);
 }
 
 void TimelineView::setLaneHeight(LaneHeight height)
@@ -248,6 +266,15 @@ void TimelineView::setSelectedClip(Id id)
 
 void TimelineView::updatePlayhead()
 {
+    // A hand on a playing record: it takes hold once pressed a moment or moved (a quick click only
+    // selects), then follows the mouse.
+    if (drag_ == Drag::Touch && engine_.isPlaying())
+    {
+        if (touch_.active)
+            sampleTouch();
+        else if (juce::Time::getMillisecondCounterHiRes() / 1000.0 - touch_.pressClock >= kTouchDelaySeconds)
+            startTouch();
+    }
     // The engine reports its position once per audio block, which is jerky on screen. While
     // playing, carry it forward by the time since the last report.
     const double reported = engine_.playheadSeconds();
@@ -458,7 +485,11 @@ void TimelineView::zoomToBeats()
     if (chosen != nullptr)
         if (const Track* track = set.findTrack(chosen->trackId))
             if (const auto grid = pool_.gridFor(*track))
-                span = kBeatsInBeatZoom * grid->periodSeconds() / timings_.at(chosen->id).speedAt(playhead_);
+            {
+                const auto& timing = timings_.at(chosen->id);
+                const double source = timing.sourceFrameAt(playhead_) / track->sampleRate;
+                span = kBeatsInBeatZoom * grid->periodAt(source) / timing.speedAt(playhead_);
+            }
     zoomToRange(playhead_ - span / 2.0, playhead_ + span / 2.0);
 }
 
@@ -533,6 +564,7 @@ void TimelineView::paint(juce::Graphics& g)
             if (auto it = timings_.find(clip.id); it != timings_.end())
                 paintClip(g, clip, it->second);
         paintBeatGuides(g);
+        paintLinks(g);
 
         if (dropHint_)
         {
@@ -544,6 +576,8 @@ void TimelineView::paint(juce::Graphics& g)
     }
 
     paintRuler(g);
+    if (cleanUp_)
+        paintCleanUp(g);
 
     const auto x = static_cast<float>(timeToX(playhead_));
     if (x >= kHeaderWidth)
@@ -654,6 +688,8 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& clip, const ClipTimi
                 paintAutomation(g, clip, timing, static_cast<Param>(p), waveArea);
     }
 
+    paintActions(g, clip, timing, waveArea);
+
     juce::Colour border = colour.brighter(0.2f);
     float thickness = 1.0f;
     if (auto it = issues_.find(clip.id); it != issues_.end())
@@ -692,6 +728,7 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& clip, const Clip
     const double to = std::min(area.getRight(), getWidth());
     const float mid = static_cast<float>(area.getCentreY());
     const float half = static_cast<float>(area.getHeight()) / 2.0f - 1.0f;
+    const float level = MixerChannel::trimGain(clip.mixer.trim) / MixerChannel::trimGain(kWaveformFullTrim);
     const auto inFrame = static_cast<double>(clip.inFrame), outFrame = static_cast<double>(clip.outFrame);
 
     // Columns are a pixel wide but counted from the clip start, not the screen edge, so while the
@@ -718,7 +755,7 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& clip, const Clip
         const auto x = static_cast<float>(timeToX((t0 + t1) / 2.0));
         const float levels[] = {bands.low, bands.mid, bands.high};
         for (size_t b = 0; b < 3; ++b)
-            tops[b].push_back({x, mid - std::max(0.5f, std::min(levels[b], 1.0f) * half)});
+            tops[b].push_back({x, mid - std::max(0.5f, std::min(levels[b] * level, 1.0f) * half)});
     }
     for (size_t b = 0; b < 3; ++b)
     {
@@ -768,8 +805,9 @@ void TimelineView::forEachVisibleBeat(const Clip& clip, const ClipTiming& timing
         return;
 
     // The finest level whose lines are far enough apart: every beat, bar, 4 bars or 16 bars.
-    const double period = grid.periodSeconds();
-    const double beatPixels = period / timing.speedAt((left + right) / 2.0) * pixelsPerSecond_;
+    const double middle = (left + right) / 2.0;
+    const double period = grid.periodAt(timing.sourceFrameAt(middle) / track.sampleRate);
+    const double beatPixels = period / timing.speedAt(middle) * pixelsPerSecond_;
     int64_t step = 0;
     for (int64_t s : {int64_t{1}, int64_t{kBeatsPerBar}, int64_t{4 * kBeatsPerBar}, int64_t{kBeatsPerPhrase}})
         if (step == 0 && beatPixels * static_cast<double>(s) >= kMinBeatSpacingPixels)
@@ -780,12 +818,12 @@ void TimelineView::forEachVisibleBeat(const Clip& clip, const ClipTiming& timing
 
     const double firstSource = timing.sourceFrameAt(left) / track.sampleRate;
     const double lastSource = timing.sourceFrameAt(right) / track.sampleRate;
-    auto firstBeat = static_cast<int64_t>(std::ceil((firstSource - grid.firstBeatSeconds) / period));
-    const auto lastBeat = static_cast<int64_t>(std::floor((lastSource - grid.firstBeatSeconds) / period));
+    auto firstBeat = static_cast<int64_t>(std::ceil(grid.beatAt(firstSource)));
+    const auto lastBeat = static_cast<int64_t>(std::floor(grid.beatAt(lastSource)));
     firstBeat += ((step - firstBeat % step) % step + step) % step; // round up to a multiple of step
     for (int64_t k = firstBeat; k <= lastBeat; k += step)
     {
-        const double frame = (grid.firstBeatSeconds + static_cast<double>(k) * period) * track.sampleRate;
+        const double frame = grid.secondsOfBeat(static_cast<double>(k)) * track.sampleRate;
         if (frame < static_cast<double>(clip.inFrame) || frame > static_cast<double>(clip.outFrame))
             continue;
         draw(static_cast<float>(timeToX(timing.timelineSecondsAt(frame))), k);
@@ -802,6 +840,23 @@ void TimelineView::paintBeats(juce::Graphics& g, const Clip& clip, const ClipTim
         g.setColour(beatColour(beat).withAlpha(downbeat ? 0.9f : 0.45f));
         g.drawLine(x, static_cast<float>(area.getY()), x, static_cast<float>(area.getBottom()), downbeat ? 2.0f : 1.0f);
     });
+    // Pins: shown at any zoom, as a handle with a line through the waveform.
+    for (const auto& pin : grid.pins)
+    {
+        const double frame = pin.seconds * track.sampleRate;
+        if (frame < static_cast<double>(clip.inFrame) || frame > static_cast<double>(clip.outFrame))
+            continue;
+        const auto x = static_cast<float>(timeToX(timing.timelineSecondsAt(frame)));
+        if (x < static_cast<float>(area.getX()) - kPinHandle || x > static_cast<float>(area.getRight()) + kPinHandle)
+            continue;
+        const auto top = static_cast<float>(area.getY());
+        g.setColour(kPinColour.withAlpha(0.6f));
+        g.drawLine(x, top, x, static_cast<float>(area.getBottom()), 1.0f);
+        juce::Path handle;
+        handle.addTriangle(x - kPinHandle / 2.0f, top, x + kPinHandle / 2.0f, top, x, top + kPinHandle);
+        g.setColour(kPinColour);
+        g.fillPath(handle);
+    }
 }
 
 void TimelineView::paintBeatGuides(juce::Graphics& g)
@@ -1113,16 +1168,446 @@ void TimelineView::showAutomationMenu(Id clip, Param param, std::optional<int> k
     });
 }
 
+// --- Nudges -----------------------------------------------------------------
+
+juce::Rectangle<int> TimelineView::actionArea(const Clip& clip, const ClipTiming& timing, size_t index,
+                                             juce::Rectangle<int> waveArea) const
+{
+    const auto& nudge = clip.actions[index];
+    const double from = timing.timelineSecondsAt(static_cast<double>(nudge.sourceFrame));
+    const auto x0 = static_cast<int>(std::floor(timeToX(from)));
+    const auto x1 = static_cast<int>(std::ceil(timeToX(from + actionLengthSeconds(nudge))));
+    // At least wide enough to see and grab when zoomed out.
+    return {x0 - 2, waveArea.getBottom() - kNudgeStrip, std::max(x1 - x0, 1) + 4, kNudgeStrip};
+}
+
+void TimelineView::paintActions(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, juce::Rectangle<int> waveArea)
+{
+    if (clip.actions.empty())
+        return;
+    g.setFont(rulerFont_);
+    for (size_t i = 0; i < clip.actions.size(); ++i)
+    {
+        const auto& action = clip.actions[i];
+        if (action.sourceFrame < clip.inFrame || action.sourceFrame >= clip.outFrame)
+            continue;
+        const auto box = actionArea(clip, timing, i, waveArea);
+        if (box.getRight() < kHeaderWidth || box.getX() > getWidth())
+            continue;
+        const double from = timing.timelineSecondsAt(static_cast<double>(action.sourceFrame));
+        const double offset = actionOffsetSeconds(action);
+        const auto colour = offset < 0.0 ? kPushColour : kDragColour;
+
+        // A faint line up through the waveform where it starts.
+        g.setColour(colour.withAlpha(0.35f));
+        g.fillRect(static_cast<float>(box.getX() + 2), static_cast<float>(waveArea.getY()), 1.0f,
+                   static_cast<float>(waveArea.getHeight() - kNudgeStrip));
+
+        // The speed curve about a line at normal speed: pushes above it, held back below (down to
+        // a standstill at the bottom), each in its colour.
+        const auto strip = box.toFloat().reduced(0.0f, 1.0f);
+        const float base = strip.getCentreY(), half = strip.getHeight() / 2.0f;
+        juce::Path curve;
+        curve.startNewSubPath(static_cast<float>(timeToX(from)), base);
+        for (const auto& point : speedShape(action))
+            curve.lineTo(static_cast<float>(timeToX(from + point.seconds)),
+                         base - half * static_cast<float>(std::clamp(point.factor - 1.0, -1.0, 1.0)));
+        curve.closeSubPath();
+        g.setColour(kDragColour.withAlpha(0.15f));
+        g.fillRect(strip.withTrimmedTop(half));
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.reduceClipRegion(strip.withHeight(half).toNearestInt());
+            g.setColour(kPushColour);
+            g.fillPath(curve);
+        }
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.reduceClipRegion(strip.withTrimmedTop(half).toNearestInt());
+            g.setColour(kDragColour);
+            g.fillPath(curve);
+        }
+        // Sized after it, when there's room to read it; drag the number up or down to change it.
+        if (const auto label = actionLabelArea(box))
+        {
+            const bool dragged = drag_ == Drag::ActionAmount && dragOrigin_.id == clip.id && dragAction_ == i;
+            const auto text = std::abs(offset) < 1.0 ? juce::String::formatted("%+.1f ms", offset * 1000.0 + 0.0)
+                                                     : juce::String::formatted("%+.3f s", offset);
+            if (dragged)
+            {
+                g.setColour(colour.withAlpha(0.3f));
+                g.fillRoundedRectangle(label->toFloat(), 3.0f);
+            }
+            g.setColour(dragged ? juce::Colours::white : colour);
+            g.drawText(text, label->reduced(3, 0), juce::Justification::centredLeft, false);
+        }
+    }
+}
+
+std::optional<juce::Rectangle<int>> TimelineView::actionLabelArea(juce::Rectangle<int> box) const
+{
+    if (pixelsPerSecond_ < 100.0 && box.getWidth() <= 70)
+        return std::nullopt;
+    return box.withX(box.getRight() + 1).withWidth(70).translated(0, -kNudgeStrip);
+}
+
+std::optional<std::pair<Id, size_t>> TimelineView::actionLabelAt(juce::Point<float> position) const
+{
+    const int deck = deckAt(static_cast<int>(position.y));
+    if (deck < 0)
+        return std::nullopt;
+    const auto waveArea = waveformBounds(deck).withTrimmedTop(18);
+    for (const auto& clip : document_.set().clips)
+        if (auto it = timings_.find(clip.id); clip.deck == deck && it != timings_.end())
+            for (size_t i = 0; i < clip.actions.size(); ++i)
+                if (const auto label = actionLabelArea(actionArea(clip, it->second, i, waveArea));
+                    !clip.actions[i].linked && clip.actions[i].sourceFrame >= clip.inFrame && label && label->toFloat().contains(position))
+                    return std::make_pair(clip.id, i);
+    return std::nullopt;
+}
+
+std::optional<std::pair<Id, size_t>> TimelineView::actionAt(juce::Point<float> position) const
+{
+    const int deck = deckAt(static_cast<int>(position.y));
+    if (deck < 0)
+        return std::nullopt;
+    const auto waveArea = waveformBounds(deck).withTrimmedTop(18);
+    for (const auto& clip : document_.set().clips)
+        if (auto it = timings_.find(clip.id); clip.deck == deck && it != timings_.end())
+            for (size_t i = 0; i < clip.actions.size(); ++i)
+                if (!clip.actions[i].linked && clip.actions[i].sourceFrame >= clip.inFrame &&
+                    actionArea(clip, it->second, i, waveArea).expanded(3, 1).toFloat().contains(position))
+                    return std::make_pair(clip.id, i);
+    return std::nullopt;
+}
+
+void TimelineView::showActionMenu(Id clip, size_t index)
+{
+    const Clip* c = document_.set().findClip(clip);
+    if (c == nullptr || index >= c->actions.size())
+        return;
+    const auto action = c->actions[index];
+    const bool nudge = action.kind == DeckAction::Kind::Nudge;
+    // Peak speeds a nudge can be set to, as a fraction of the record's speed (10% is how it was played).
+    static constexpr double kSpeeds[] = {0.02, 0.05, 0.1, 0.2, 0.4};
+    constexpr int kSpeedBase = 100;
+    juce::PopupMenu menu;
+    menu.addItem(1, nudge ? "Delete nudge" : "Delete touch");
+    menu.addItem(2, "Clear all nudges and touches on this record");
+    if (nudge)
+    {
+        juce::PopupMenu speeds;
+        for (size_t k = 0; k < std::size(kSpeeds); ++k)
+            speeds.addItem(kSpeedBase + static_cast<int>(k),
+                           juce::String::formatted("%.0f%% %s, over %.0f ms", kSpeeds[k] * 100.0,
+                                                   action.seconds < 0.0 ? "faster" : "slower",
+                                                   nudgeLengthSeconds(action.seconds, kSpeeds[k]) * 1000.0),
+                           true, std::abs(action.speed - kSpeeds[k]) < 1e-9);
+        menu.addSubMenu("Speed", speeds);
+    }
+    menu.showMenuAsync(juce::PopupMenu::Options(), [safe = juce::Component::SafePointer(this), clip, index](int result) {
+        if (safe == nullptr || result == 0)
+            return;
+        safe->document_.edit([&](Set& s) {
+            return edit::withFollowers(s, clip, [&](Set& t) {
+                if (result >= kSpeedBase)
+                    return edit::setNudgeSpeed(t, clip, index, kSpeeds[static_cast<size_t>(result - kSpeedBase)]);
+                return result == 1 ? edit::deleteAction(t, clip, index) : edit::clearActions(t, clip);
+            });
+        });
+    });
+}
+
+// --- Right-click on a record --------------------------------------------------
+
+void TimelineView::showClipMenu(Id clipId, double atSeconds)
+{
+    const Clip* clip = document_.set().findClip(clipId);
+    if (clip == nullptr)
+        return;
+    struct Insert
+    {
+        const char* text;
+        bool hold;
+        double seconds;
+    };
+    static constexpr Insert kInserts[] = {
+        {"Push 10 ms earlier", false, -0.010}, {"Push 1 ms earlier", false, -0.001},
+        {"Hold back 10 ms", false, 0.010},     {"Hold back 1 ms", false, 0.001},
+        {"Hold still 0.25 s", true, 0.25},     {"Hold still 0.5 s", true, 0.5},
+        {"Hold still 1 s", true, 1.0},
+    };
+    constexpr int kCleanUp = 100;
+    constexpr int kLineUp = 101;
+    constexpr int kUnlink = 102;
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Here, at " + formatTime(atSeconds, true));
+    for (size_t i = 0; i < std::size(kInserts); ++i)
+    {
+        if (i == 4)
+            menu.addSeparator();
+        menu.addItem(static_cast<int>(i) + 1, kInserts[i].text);
+    }
+    menu.addSeparator();
+    menu.addItem(kLineUp, "Line up beats here", onLineUpBeats != nullptr);
+    const bool linked = std::any_of(document_.set().links.begin(), document_.set().links.end(),
+                                    [clipId](const BeatLink& l) { return l.leader == clipId || l.follower == clipId; });
+    menu.addItem(kUnlink, "Delete beat links", linked);
+    menu.addItem(kCleanUp, "Clean up nudges...", !clip->actions.empty());
+    menu.showMenuAsync(juce::PopupMenu::Options(), [safe = juce::Component::SafePointer(this), clipId, atSeconds](int result) {
+        if (safe == nullptr || result == 0)
+            return;
+        if (result == kUnlink)
+        {
+            safe->document_.edit([&](Set& s) { return edit::deleteLinks(s, clipId); });
+            return;
+        }
+        if (result == kLineUp)
+        {
+            safe->onLineUpBeats(clipId, atSeconds);
+            return;
+        }
+        if (result == kCleanUp)
+        {
+            safe->cleanUp_ = CleanUp{clipId, false, {}, {}};
+            safe->setMouseCursor(juce::MouseCursor::CrosshairCursor);
+            safe->repaint();
+            return;
+        }
+        const auto& insert = kInserts[static_cast<size_t>(result - 1)];
+        safe->document_.edit([&](Set& s) {
+            return edit::withFollowers(s, clipId, [&](Set& t) {
+                return insert.hold ? edit::addHold(t, clipId, atSeconds, insert.seconds)
+                                   : edit::addNudge(t, clipId, atSeconds, insert.seconds);
+            });
+        });
+    });
+}
+
+void TimelineView::paintCleanUp(juce::Graphics& g)
+{
+    const Clip* clip = document_.set().findClip(cleanUp_->clip);
+    if (clip == nullptr)
+        return;
+    const auto lane = laneBounds(clip->deck);
+    if (!cleanUp_->dragging)
+    {
+        g.setColour(juce::Colours::black.withAlpha(0.7f));
+        const auto hint = lane.withTrimmedLeft(kHeaderWidth).withHeight(22).translated(0, 20);
+        g.fillRect(hint.withWidth(440));
+        g.setColour(juce::Colours::white);
+        g.setFont(titleFont_);
+        g.drawText("Drag over the stretch of this record to clean up its nudges (Esc cancels)", hint.reduced(8, 0),
+                   juce::Justification::centredLeft, false);
+        return;
+    }
+    const auto box = juce::Rectangle<float>(cleanUp_->from, cleanUp_->to);
+    g.setColour(juce::Colours::white.withAlpha(0.12f));
+    g.fillRect(box);
+    g.setColour(juce::Colours::white);
+    g.drawRect(box, 1.0f);
+}
+
+bool TimelineView::keyPressed(const juce::KeyPress& key)
+{
+    if (cleanUp_ && key == juce::KeyPress::escapeKey)
+    {
+        cleanUp_.reset();
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+        repaint();
+        return true;
+    }
+    return false;
+}
+
+// --- A hand on the record ----------------------------------------------------
+
+std::optional<size_t> TimelineView::touchIndex() const
+{
+    const Clip* clip = document_.set().findClip(touch_.clip);
+    if (clip == nullptr)
+        return std::nullopt;
+    for (size_t i = 0; i < clip->actions.size(); ++i)
+        if (clip->actions[i].kind == DeckAction::Kind::Touch && clip->actions[i].sourceFrame == touch_.frame)
+            return i;
+    return std::nullopt;
+}
+
+double TimelineView::heardNow() const
+{
+    return heardSeconds ? heardSeconds() : engine_.playheadSeconds();
+}
+
+bool TimelineView::startTouch()
+{
+    const auto timing = timings_.find(touch_.clip);
+    const double heard = heardNow();
+    if (!engine_.isPlaying() || timing == timings_.end() || heard < timing->second.startSeconds() ||
+        heard >= timing->second.endSeconds())
+        return false;
+    touch_.active = true;
+    touch_.start = heard;
+    touch_.frame = static_cast<int64_t>(std::llround(timing->second.sourceFrameAt(heard)));
+    touch_.handX = touch_.mouseX;
+    touch_.music = 0.0;
+    touch_.speeds = {{0.0, 1.0}};
+    sampleTouch();
+    return true;
+}
+
+void TimelineView::sampleTouch()
+{
+    // Where the hand has taken the record: dragging the waveform left by a second of the timeline
+    // takes it a second of music on; holding the mouse still holds the record still. Never back.
+    const double t = heardNow() - touch_.start;
+    const double music = std::max(touch_.music, (touch_.handX - touch_.mouseX) / pixelsPerSecond_);
+    const auto& last = touch_.speeds.back();
+    constexpr double kMinStep = 0.01; // UI ticks come about every 16 ms; closer ones are noise
+    if (t - last.seconds >= kMinStep)
+    {
+        touch_.speeds.push_back({t, (music - touch_.music) / (t - last.seconds)});
+        touch_.music = music;
+    }
+    // Written as far as it's gone, holding its last speed a little ahead of what's heard, so the
+    // engine (which plays ahead of what's heard) never plays past it.
+    auto speeds = touch_.speeds;
+    speeds.push_back({std::max(t, speeds.back().seconds) + kTouchLeadSeconds, speeds.back().factor});
+    const auto touch = touch_;
+    document_.edit([&](Set& s) {
+        if (const auto index = touchIndex())
+            edit::deleteAction(s, touch.clip, *index);
+        return edit::addTouch(s, touch.clip, touch.start, speeds);
+    });
+}
+
+void TimelineView::endTouch()
+{
+    if (!touch_.active)
+    {
+        touch_ = {};
+        return;
+    }
+    const auto touch = touch_;
+    if (const auto index = touchIndex())
+        document_.edit([&](Set& s) { return edit::deleteAction(s, touch.clip, *index); });
+    // Written for good as played, and this time the records mixed in later move with it.
+    document_.edit([&](Set& s) {
+        return edit::withFollowers(s, touch.clip, [&](Set& t) { return edit::addTouch(t, touch.clip, touch.start, touch.speeds); });
+    });
+    touch_ = {};
+}
+
 // --- Mouse ------------------------------------------------------------------
 
 void TimelineView::mouseDown(const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
 
+    if (cleanUp_)
+    {
+        if (e.mods.isPopupMenu())
+        {
+            cleanUp_.reset();
+            setMouseCursor(juce::MouseCursor::NormalCursor);
+        }
+        else
+        {
+            cleanUp_->dragging = true;
+            cleanUp_->from = cleanUp_->to = e.position;
+        }
+        repaint();
+        return;
+    }
+
     if (e.y < kRulerHeight && e.x >= kHeaderWidth)
     {
         drag_ = Drag::Scrub;
         engine_.seek(std::max(0.0, xToTime(e.x)));
+        return;
+    }
+
+    if (const auto end = linkEndAt(e.position))
+    {
+        setSelectedClip(end->clip);
+        if (e.mods.isPopupMenu())
+        {
+            showLinkMenu(end->link, end->clip);
+            return;
+        }
+        dragLink_ = end->link;
+        dragOrigin_ = *document_.set().findClip(end->clip);
+        dragTiming_ = timings_.at(end->clip);
+        drag_ = Drag::LinkEnd;
+        document_.beginGesture();
+        return;
+    }
+
+    {
+        auto beat = beatPinAt(e.position);
+        if (beat && e.mods.isPopupMenu())
+        {
+            setSelectedClip(beat->clip);
+            showBeatPinMenu(beat->clip, beat->beat);
+            return;
+        }
+        if (!beat && e.mods.isCommandDown() && !e.mods.isPopupMenu())
+            beat = beatLineAt(e.position);
+        const Hit body = clipAt(e.position);
+        const Id clipId = beat ? beat->clip : body.part == Part::Body && e.mods.isCommandDown() ? body.clip : 0;
+        if (clipId != 0 && !e.mods.isPopupMenu())
+        {
+            // A beat line: pinned and dragged to where the beat really is (pinned in place by a
+            // click). Into another lane, from a beat line or anywhere in the record: a link.
+            setSelectedClip(clipId);
+            const Set& set = document_.set();
+            dragOrigin_ = *set.findClip(clipId);
+            const Track* track = set.findTrack(dragOrigin_.trackId);
+            dragGrid_ = pool_.gridFor(*track).value_or(BeatGrid{});
+            dragTrackGrid_ = track->grid;
+            dragHasBeat_ = beat.has_value();
+            dragBeat_ = beat ? beat->beat : 0;
+            dragTiming_ = timings_.at(clipId);
+            dragAnchorTime_ = xToTime(e.x);
+            dragLinkFrame_ = beat ? std::llround(dragGrid_.secondsOfBeat(static_cast<double>(dragBeat_)) * track->sampleRate)
+                                  : std::llround(dragTiming_->sourceFrameAt(dragAnchorTime_));
+            linkTo_.reset();
+            drag_ = Drag::BeatPin;
+            document_.beginGesture();
+            return;
+        }
+    }
+
+    if (const auto label = actionLabelAt(e.position); label && !e.mods.isPopupMenu())
+    {
+        // The number: dragged up or down, it changes the action's size.
+        setSelectedClip(label->first);
+        dragOrigin_ = *document_.set().findClip(label->first);
+        dragAction_ = label->second;
+        dragActionAmount_ = actionOffsetSeconds(dragOrigin_.actions[label->second]);
+        drag_ = Drag::ActionAmount;
+        document_.beginGesture();
+        repaint();
+        return;
+    }
+
+    if (const auto action = actionAt(e.position))
+    {
+        setSelectedClip(action->first);
+        if (e.mods.isPopupMenu())
+            showActionMenu(action->first, action->second);
+        else if (!engine_.isPlaying())
+        {
+            // Stopped, it can be dragged along the music. Positions come from the timing at the
+            // start of the drag, as for keypoints: moving it changes the timing.
+            dragOrigin_ = *document_.set().findClip(action->first);
+            dragTiming_ = timings_.at(action->first);
+            dragAction_ = action->second;
+            dragAnchorTime_ = xToTime(e.x);
+            dragActionStart_ = dragTiming_->timelineSecondsAt(
+                static_cast<double>(dragOrigin_.actions[action->second].sourceFrame));
+            drag_ = Drag::Action;
+            document_.beginGesture();
+        }
         return;
     }
 
@@ -1141,28 +1626,127 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
     }
 
     setSelectedClip(hit.clip);
+    if (e.mods.isPopupMenu())
+    {
+        showClipMenu(hit.clip, xToTime(e.x));
+        return;
+    }
     dragOrigin_ = *document_.set().findClip(hit.clip);
     dragAnchorTime_ = xToTime(e.x);
     drag_ = hit.part == Part::StartEdge ? Drag::TrimStart : hit.part == Part::EndEdge ? Drag::TrimEnd : Drag::Move;
     document_.beginGesture();
+    // While the record plays, its body is under the hand (see the class comment): Option moves it
+    // instead, with the tone arm, and Shift keeps its own meanings. A record that isn't playing
+    // now moves as when stopped.
+    const auto timing = timings_.find(hit.clip);
+    const bool heard = timing != timings_.end() && heardNow() >= timing->second.startSeconds() &&
+                       heardNow() < timing->second.endSeconds();
+    if (drag_ == Drag::Move && engine_.isPlaying() && heard && !e.mods.isAltDown() && !e.mods.isShiftDown() &&
+        !e.mods.isPopupMenu())
+    {
+        drag_ = Drag::Touch;
+        touch_ = {};
+        touch_.clip = hit.clip;
+        touch_.mouseX = e.position.x;
+        touch_.pressClock = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    }
 }
 
 void TimelineView::mouseDrag(const juce::MouseEvent& e)
 {
+    if (cleanUp_)
+    {
+        if (cleanUp_->dragging)
+            cleanUp_->to = e.position;
+        repaint();
+        return;
+    }
     const double t = xToTime(e.x);
     const Id id = dragOrigin_.id;
+    if (drag_ == Drag::Touch)
+    {
+        touch_.mouseX = e.position.x;
+        if (!touch_.active && e.getDistanceFromDragStart() >= kTouchDragPixels)
+            startTouch();
+        return;
+    }
     switch (drag_)
     {
     case Drag::Scrub:
         engine_.seek(std::max(0.0, t));
         break;
+    case Drag::Touch:
+        break;
+    case Drag::ActionAmount:
+    {
+        // Up for more (later), down for less: 0.1 ms a pixel, or 0.01 ms with Shift.
+        const double perPixel = e.mods.isShiftDown() ? 0.00001 : 0.0001;
+        const double amount = dragActionAmount_ - e.getDistanceFromDragStartY() * perPixel;
+        const auto index = dragAction_;
+        document_.edit([&](Set& s) {
+            return edit::withFollowers(s, id, [&](Set& u) { return edit::setActionOffset(u, id, index, amount); });
+        });
+        break;
+    }
+    case Drag::LinkEnd:
+    {
+        const auto frame = snappedFrame(dragOrigin_, *dragTiming_, e.position.x);
+        const Id link = dragLink_;
+        document_.edit([&](Set& s) { return edit::moveLink(s, link, id, frame); });
+        break;
+    }
+    case Drag::BeatPin:
+    {
+        const Track* track = document_.set().findTrack(dragOrigin_.trackId);
+        if (track == nullptr)
+            break;
+        const Id trackId = track->id;
+        const int deck = deckAt(e.y);
+        if (deck >= 0 && deck != dragOrigin_.deck)
+        {
+            // Over another lane: a link, so the grid goes back to how it was.
+            linkTo_ = e.position;
+            const auto original = dragTrackGrid_;
+            document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, original); });
+            repaint();
+            break;
+        }
+        if (linkTo_)
+        {
+            linkTo_.reset();
+            repaint();
+        }
+        if (!dragHasBeat_)
+            break;
+        const double from = dragTiming_->timelineSecondsAt(dragGrid_.secondsOfBeat(static_cast<double>(dragBeat_)) * track->sampleRate);
+        const double at = from + (t - dragAnchorTime_) * (e.mods.isShiftDown() ? kFineDragFactor : 1.0);
+        const BeatGrid updated = dragGrid_.pinned(dragBeat_, dragTiming_->sourceFrameAt(at) / track->sampleRate);
+        document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
+        break;
+    }
+    case Drag::Action:
+    {
+        const double at = dragActionStart_ + (t - dragAnchorTime_) * (e.mods.isShiftDown() ? kFineDragFactor : 1.0);
+        const auto frame = static_cast<int64_t>(std::llround(dragTiming_->sourceFrameAt(at)));
+        const auto index = dragAction_;
+        document_.edit([&](Set& s) {
+            return edit::withFollowers(s, id, [&](Set& u) { return edit::moveAction(u, id, index, frame); });
+        });
+        break;
+    }
     case Drag::Move:
     {
         // Shift drags at a tenth of the speed for fine alignment.
         const double delta = (t - dragAnchorTime_) * (e.mods.isShiftDown() ? kFineDragFactor : 1.0);
         const int deck = deckAt(e.y);
-        document_.edit([&](Set& s) { return edit::moveClip(s, id, dragOrigin_.startSeconds + delta,
-                                                           deck >= 0 ? deck : dragOrigin_.deck); });
+        // With the tone arm (Option) the record is lifted off and dropped elsewhere: its beat
+        // links go. A plain drag keeps them (a follower stays put; a leader takes its followers).
+        const bool toneArm = e.mods.isAltDown() && e.getDistanceFromDragStart() > 0;
+        document_.edit([&](Set& s) {
+            const bool unlinked = toneArm && edit::deleteLinks(s, id);
+            return edit::moveClip(s, id, dragOrigin_.startSeconds + delta, deck >= 0 ? deck : dragOrigin_.deck) ||
+                   unlinked;
+        });
         break;
     }
     case Drag::TrimStart:
@@ -1214,14 +1798,68 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
 
 void TimelineView::mouseUp(const juce::MouseEvent& e)
 {
+    if (cleanUp_)
+    {
+        if (cleanUp_->dragging)
+        {
+            const auto clean = *cleanUp_;
+            cleanUp_.reset();
+            setMouseCursor(juce::MouseCursor::NormalCursor);
+            const double from = xToTime(std::min(clean.from.x, clean.to.x));
+            const double to = xToTime(std::max(clean.from.x, clean.to.x));
+            document_.edit([&](Set& s) {
+                return edit::withFollowers(s, clean.clip,
+                                           [&](Set& t) { return edit::tidyActions(t, clean.clip, from, to).has_value(); });
+            });
+            repaint();
+        }
+        return;
+    }
     // A click on a flat line without dragging adds a keypoint there, as on any other line.
     if (drag_ == Drag::FlatLine && !e.mouseWasDraggedSinceMouseDown())
     {
         const auto hit = flatLine_.hit;
         document_.edit([&](Set& s) { return edit::setAutomationPoint(s, hit.clip, hit.param, hit.frame, hit.value); });
     }
+    if (drag_ == Drag::Touch)
+        endTouch();
+    if (drag_ == Drag::BeatPin)
+    {
+        if (linkTo_)
+        {
+            const Hit target = clipAt(*linkTo_);
+            const Clip* other = document_.set().findClip(target.clip);
+            if (other != nullptr && other->deck != dragOrigin_.deck)
+            {
+                const auto frame = snappedFrame(*other, timings_.at(other->id), linkTo_->x);
+                const Id from = dragOrigin_.id, to = other->id;
+                const auto fromFrame = dragLinkFrame_;
+                document_.edit([&](Set& s) { return edit::addLink(s, from, fromFrame, to, frame).has_value(); });
+            }
+            linkTo_.reset();
+            repaint();
+        }
+        else if (!e.mouseWasDraggedSinceMouseDown() && dragTiming_)
+        {
+            // A click: the downbeat is about here; Shift, another beat is (the tempo is found
+            // from the music between and around them).
+            const Track* track = document_.set().findTrack(dragOrigin_.trackId);
+            const double seconds = dragTiming_->sourceFrameAt(xToTime(e.mouseDownPosition.x)) / track->sampleRate;
+            const std::optional<double> downbeat =
+                downbeatClick_ && downbeatClick_->first == track->id ? std::optional(downbeatClick_->second) : std::nullopt;
+            if (!e.mods.isShiftDown())
+            {
+                downbeatClick_ = {track->id, seconds};
+                if (onDownbeatClicked)
+                    onDownbeatClicked(track->id, seconds);
+            }
+            else if (onBeatClicked)
+                onBeatClicked(track->id, downbeat, seconds);
+        }
+    }
     if (drag_ == Drag::Move || drag_ == Drag::TrimStart || drag_ == Drag::TrimEnd || drag_ == Drag::Keypoint ||
-        drag_ == Drag::FlatLine)
+        drag_ == Drag::FlatLine || drag_ == Drag::Touch || drag_ == Drag::Action || drag_ == Drag::ActionAmount ||
+        drag_ == Drag::BeatPin || drag_ == Drag::LinkEnd)
         document_.endGesture();
     // Shift-click without dragging sets the downbeat (shift-drag is a fine move).
     if (drag_ == Drag::Move && e.mods.isShiftDown() && !e.mouseWasDraggedSinceMouseDown())
@@ -1244,19 +1882,191 @@ void TimelineView::setDownbeatAt(Id clipId, float x, bool snapToBeatLine)
     double beat = timing->second.sourceFrameAt(xToTime(x)) / track->sampleRate;
     if (snapToBeatLine)
     {
-        const double period = grid->periodSeconds();
-        const double nearest = grid->firstBeatSeconds + std::round((beat - grid->firstBeatSeconds) / period) * period;
+        const double nearest = grid->secondsOfBeat(std::round(grid->beatAt(beat)));
         const double nearestX = timeToX(timing->second.timelineSecondsAt(nearest * track->sampleRate));
         if (std::abs(nearestX - x) <= kSnapPixels)
             beat = nearest;
     }
-    const BeatGrid updated{grid->bpm, beat};
+    const BeatGrid updated = grid->withDownbeatAt(beat);
     const Id trackId = track->id;
     document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
 }
 
+std::optional<TimelineView::BeatHit> TimelineView::beatLineAt(juce::Point<float> position) const
+{
+    const Hit hit = clipAt(position);
+    const Set& set = document_.set();
+    const Clip* clip = set.findClip(hit.clip);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    if (hit.part != Part::Body || !grid || position.y < static_cast<float>(waveformBounds(clip->deck).getY() + 18))
+        return std::nullopt;
+    const auto& timing = timings_.at(clip->id);
+    const double t = xToTime(position.x);
+    const double source = timing.sourceFrameAt(t) / track->sampleRate;
+    // Only where every beat is drawn: a line you can't see can't be grabbed.
+    if (grid->periodAt(source) / timing.speedAt(t) * pixelsPerSecond_ < kMinBeatSpacingPixels)
+        return std::nullopt;
+    const auto beat = static_cast<int64_t>(std::llround(grid->beatAt(source)));
+    const double x = timeToX(timing.timelineSecondsAt(grid->secondsOfBeat(static_cast<double>(beat)) * track->sampleRate));
+    if (std::abs(x - position.x) > kBeatGrabPixels)
+        return std::nullopt;
+    return BeatHit{clip->id, beat};
+}
+
+std::optional<TimelineView::BeatHit> TimelineView::beatPinAt(juce::Point<float> position) const
+{
+    const Hit hit = clipAt(position);
+    const Set& set = document_.set();
+    const Clip* clip = set.findClip(hit.clip);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    if (!grid || grid->pins.empty())
+        return std::nullopt;
+    const int top = waveformBounds(clip->deck).getY() + 18;
+    if (position.y < static_cast<float>(top) || position.y > static_cast<float>(top + kPinHandle + 2))
+        return std::nullopt;
+    const auto& timing = timings_.at(clip->id);
+    std::optional<BeatHit> best;
+    double bestDistance = kPinHandle / 2.0 + 1.0;
+    for (const auto& pin : grid->pins)
+    {
+        const double distance = std::abs(timeToX(timing.timelineSecondsAt(pin.seconds * track->sampleRate)) - position.x);
+        if (distance <= bestDistance)
+        {
+            bestDistance = distance;
+            best = BeatHit{clip->id, pin.beat};
+        }
+    }
+    return best;
+}
+
+int64_t TimelineView::snappedFrame(const Clip& clip, const ClipTiming& timing, float x) const
+{
+    const double frame = timing.sourceFrameAt(xToTime(x));
+    const Track* track = document_.set().findTrack(clip.trackId);
+    if (const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt)
+    {
+        const double beat = grid->secondsOfBeat(std::round(grid->beatAt(frame / track->sampleRate))) * track->sampleRate;
+        if (std::abs(timeToX(timing.timelineSecondsAt(beat)) - x) <= kBeatGrabPixels)
+            return std::llround(beat);
+    }
+    return std::llround(frame);
+}
+
+std::optional<TimelineView::LinkHit> TimelineView::linkEndAt(juce::Point<float> position) const
+{
+    constexpr float kGrab = 6.0f;
+    for (const auto& link : document_.set().links)
+        for (const auto& [clipId, frame] : {std::pair{link.follower, link.followerFrame}, std::pair{link.leader, link.leaderFrame}})
+        {
+            const Clip* clip = document_.set().findClip(clipId);
+            const auto timing = timings_.find(clipId);
+            if (clip == nullptr || timing == timings_.end())
+                continue;
+            const auto lane = waveformBounds(clip->deck);
+            const juce::Point<float> dot(static_cast<float>(timeToX(timing->second.timelineSecondsAt(static_cast<double>(frame)))),
+                                         static_cast<float>(lane.getCentreY()));
+            if (dot.getDistanceFrom(position) <= kGrab)
+                return LinkHit{link.id, clipId};
+        }
+    return std::nullopt;
+}
+
+void TimelineView::paintLinks(juce::Graphics& g)
+{
+    const Set& set = document_.set();
+    struct End
+    {
+        double seconds;
+        juce::Point<float> dot;
+    };
+    const auto end = [&](Id clipId, int64_t frame) -> std::optional<End> {
+        const Clip* clip = set.findClip(clipId);
+        const auto timing = timings_.find(clipId);
+        if (clip == nullptr || timing == timings_.end() || frame < clip->inFrame || frame >= clip->outFrame)
+            return std::nullopt;
+        const double seconds = timing->second.timelineSecondsAt(static_cast<double>(frame));
+        return End{seconds, {static_cast<float>(timeToX(seconds)), static_cast<float>(waveformBounds(clip->deck).getCentreY())}};
+    };
+    for (const auto& link : set.links)
+    {
+        const auto a = end(link.leader, link.leaderFrame);
+        const auto b = end(link.follower, link.followerFrame);
+        if (!a || !b)
+            continue;
+        // Red when it can't be kept (validate() says why).
+        g.setColour(std::abs(a->seconds - b->seconds) <= 0.001 ? kLinkColour : juce::Colours::red);
+        g.drawLine({a->dot, b->dot}, 2.0f);
+        for (const auto& p : {a->dot, b->dot})
+            g.fillEllipse(juce::Rectangle<float>(9.0f, 9.0f).withCentre(p));
+    }
+    // A link being made.
+    if (drag_ == Drag::BeatPin && linkTo_ && dragTiming_)
+    {
+        const juce::Point<float> from(
+            static_cast<float>(timeToX(dragTiming_->timelineSecondsAt(static_cast<double>(dragLinkFrame_)))),
+            static_cast<float>(waveformBounds(dragOrigin_.deck).getCentreY()));
+        g.setColour(kLinkColour.withAlpha(0.7f));
+        g.drawLine({from, *linkTo_}, 1.5f);
+        g.fillEllipse(juce::Rectangle<float>(9.0f, 9.0f).withCentre(from));
+    }
+}
+
+void TimelineView::showLinkMenu(Id link, Id clipId)
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, "Delete this link");
+    menu.addItem(2, "Delete all of this record's links");
+    menu.showMenuAsync(juce::PopupMenu::Options(), [safe = juce::Component::SafePointer(this), link, clipId](int result) {
+        if (safe == nullptr || result == 0)
+            return;
+        safe->document_.edit([&](Set& s) { return result == 1 ? edit::deleteLink(s, link) : edit::deleteLinks(s, clipId); });
+    });
+}
+
+void TimelineView::showBeatPinMenu(Id clipId, int64_t beat)
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, "Unpin this beat");
+    menu.addItem(2, "Unpin all beats");
+    menu.showMenuAsync(juce::PopupMenu::Options(), [safe = juce::Component::SafePointer(this), clipId, beat](int result) {
+        if (safe == nullptr || result == 0)
+            return;
+        const Set& set = safe->document_.set();
+        const Clip* clip = set.findClip(clipId);
+        const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+        const auto grid = track != nullptr ? safe->pool_.gridFor(*track) : std::nullopt;
+        if (!grid)
+            return;
+        const BeatGrid updated = result == 1 ? grid->unpinned(beat) : BeatGrid{grid->bpm, grid->firstBeatSeconds};
+        const Id trackId = track->id;
+        safe->document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
+    });
+}
+
 void TimelineView::mouseMove(const juce::MouseEvent& e)
 {
+    if (cleanUp_)
+    {
+        setMouseCursor(juce::MouseCursor::CrosshairCursor);
+        return;
+    }
+    if (actionLabelAt(e.position))
+    {
+        setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+        return;
+    }
+    if (linkEndAt(e.position))
+    {
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+        return;
+    }
+    if (beatPinAt(e.position) || (e.mods.isCommandDown() && beatLineAt(e.position)))
+    {
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+        return;
+    }
     if (const auto hit = automationAt(e.position))
     {
         setMouseCursor(hit->keypoint ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::CrosshairCursor);
@@ -1269,6 +2079,31 @@ void TimelineView::mouseMove(const juce::MouseEvent& e)
 
 void TimelineView::mouseDoubleClick(const juce::MouseEvent& e)
 {
+    if (const auto end = linkEndAt(e.position))
+    {
+        const Id link = end->link;
+        document_.edit([&](Set& s) { return edit::deleteLink(s, link); });
+        return;
+    }
+    if (const auto pin = beatPinAt(e.position))
+    {
+        const Set& set = document_.set();
+        const Track* track = set.findTrack(set.findClip(pin->clip)->trackId);
+        if (const auto grid = pool_.gridFor(*track))
+        {
+            const BeatGrid updated = grid->unpinned(pin->beat);
+            const Id trackId = track->id;
+            document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
+        }
+        return;
+    }
+    if (const auto nudge = actionAt(e.position))
+    {
+        document_.edit([&](Set& s) {
+            return edit::withFollowers(s, nudge->first, [&](Set& t) { return edit::deleteAction(t, nudge->first, nudge->second); });
+        });
+        return;
+    }
     if (const auto hit = automationAt(e.position); hit && hit->keypoint && *hit->keypoint >= 0)
     {
         const auto index = static_cast<size_t>(*hit->keypoint);

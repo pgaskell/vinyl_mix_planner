@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <vector>
 
 namespace vmp
@@ -26,6 +27,7 @@ public:
     bool edit(const std::function<bool(Set&)>& change);
     void beginGesture();
     void endGesture();
+    bool inGesture() const { return inGesture_; }
 
     bool canUndo() const { return !undo_.empty(); }
     bool canRedo() const { return !redo_.empty(); }
@@ -38,6 +40,11 @@ public:
     // Changes on every edit, undo, redo or reset; cheap for views to poll.
     uint64_t revision() const { return revision_; }
 
+    // The clip's timing in the current set, built once per revision: views that need timings
+    // every frame use this rather than building their own (a clip with deck actions has thousands
+    // of breakpoints). Null if the clip or its track isn't in the set. Valid until the next change.
+    const ClipTiming* timing(Id clip) const;
+
 private:
     struct Snapshot
     {
@@ -49,6 +56,8 @@ private:
     std::vector<Snapshot> undo_, redo_;
     uint64_t stateId_ = 0, savedStateId_ = 0, nextStateId_ = 1, revision_ = 0;
     bool inGesture_ = false, gestureRecorded_ = false;
+    mutable std::map<Id, ClipTiming> timings_;
+    mutable uint64_t timingsRevision_ = 0;
 };
 
 } // namespace vmp

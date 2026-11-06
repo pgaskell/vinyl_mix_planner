@@ -1,5 +1,6 @@
 #include "core/Musical.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 
@@ -16,6 +17,150 @@ int wrap12(int n)
     return ((n % 12) + 12) % 12;
 }
 } // namespace
+
+double BeatGrid::secondsOfBeat(double beat) const
+{
+    const double period = periodSeconds();
+    if (pins.empty())
+        return firstBeatSeconds + beat * period;
+    if (beat <= static_cast<double>(pins.front().beat))
+        return pins.front().seconds + (beat - static_cast<double>(pins.front().beat)) * period;
+    if (beat >= static_cast<double>(pins.back().beat))
+        return pins.back().seconds + (beat - static_cast<double>(pins.back().beat)) * period;
+    const auto next = std::upper_bound(pins.begin(), pins.end(), beat,
+                                       [](double b, const BeatPin& pin) { return b < static_cast<double>(pin.beat); });
+    const auto prev = next - 1;
+    const double f = (beat - static_cast<double>(prev->beat)) / static_cast<double>(next->beat - prev->beat);
+    return prev->seconds + f * (next->seconds - prev->seconds);
+}
+
+double BeatGrid::beatAt(double seconds) const
+{
+    const double period = periodSeconds();
+    if (pins.empty())
+        return (seconds - firstBeatSeconds) / period;
+    if (seconds <= pins.front().seconds)
+        return static_cast<double>(pins.front().beat) + (seconds - pins.front().seconds) / period;
+    if (seconds >= pins.back().seconds)
+        return static_cast<double>(pins.back().beat) + (seconds - pins.back().seconds) / period;
+    const auto next = std::upper_bound(pins.begin(), pins.end(), seconds,
+                                       [](double s, const BeatPin& pin) { return s < pin.seconds; });
+    const auto prev = next - 1;
+    const double f = (seconds - prev->seconds) / (next->seconds - prev->seconds);
+    return static_cast<double>(prev->beat) + f * static_cast<double>(next->beat - prev->beat);
+}
+
+double BeatGrid::periodAt(double seconds) const
+{
+    if (pins.size() < 2 || seconds <= pins.front().seconds || seconds >= pins.back().seconds)
+        return periodSeconds();
+    const auto next = std::upper_bound(pins.begin(), pins.end(), seconds,
+                                       [](double s, const BeatPin& pin) { return s < pin.seconds; });
+    const auto prev = next - 1;
+    return (next->seconds - prev->seconds) / static_cast<double>(next->beat - prev->beat);
+}
+
+const BeatPin* BeatGrid::findPin(int64_t beat) const
+{
+    const auto it = std::find_if(pins.begin(), pins.end(), [beat](const BeatPin& pin) { return pin.beat == beat; });
+    return it != pins.end() ? &*it : nullptr;
+}
+
+BeatGrid BeatGrid::pinned(int64_t beat, double seconds) const
+{
+    BeatGrid grid = *this;
+    if (grid.pins.empty() && beat != 0)
+        grid.pins.push_back({0, firstBeatSeconds});
+    std::erase_if(grid.pins, [beat](const BeatPin& pin) { return pin.beat == beat; });
+    const auto next = std::lower_bound(grid.pins.begin(), grid.pins.end(), beat,
+                                       [](const BeatPin& pin, int64_t b) { return pin.beat < b; });
+    // Beats between the new pin and its neighbours at least half their nominal length.
+    const double half = 0.5 * periodSeconds();
+    double lower = -1e12;
+    double upper = 1e12;
+    if (next != grid.pins.begin())
+        lower = (next - 1)->seconds + static_cast<double>(beat - (next - 1)->beat) * half;
+    if (next != grid.pins.end())
+        upper = next->seconds - static_cast<double>(next->beat - beat) * half;
+    if (!(lower < upper) || !std::isfinite(seconds))
+        return *this;
+    grid.pins.insert(next, {beat, std::clamp(seconds, lower, upper)});
+    return grid.tidied();
+}
+
+BeatGrid BeatGrid::unpinned(int64_t beat) const
+{
+    BeatGrid grid = *this;
+    std::erase_if(grid.pins, [beat](const BeatPin& pin) { return pin.beat == beat; });
+    return grid.tidied();
+}
+
+BeatGrid BeatGrid::shifted(double seconds) const
+{
+    BeatGrid grid = *this;
+    grid.firstBeatSeconds += seconds;
+    for (auto& pin : grid.pins)
+        pin.seconds += seconds;
+    return grid;
+}
+
+BeatGrid BeatGrid::renumbered(int64_t beat) const
+{
+    BeatGrid grid = *this;
+    grid.firstBeatSeconds = secondsOfBeat(static_cast<double>(beat));
+    for (auto& pin : grid.pins)
+        pin.beat -= beat;
+    return grid;
+}
+
+BeatGrid BeatGrid::withDownbeatAt(double seconds) const
+{
+    if (pins.empty())
+        return {bpm, seconds};
+    return renumbered(static_cast<int64_t>(std::llround(beatAt(seconds))));
+}
+
+BeatGrid BeatGrid::doubled() const
+{
+    BeatGrid grid = *this;
+    grid.bpm *= 2.0;
+    for (auto& pin : grid.pins)
+        pin.beat *= 2;
+    return grid;
+}
+
+BeatGrid BeatGrid::halved() const
+{
+    BeatGrid grid = *this;
+    grid.bpm /= 2.0;
+    std::erase_if(grid.pins, [](const BeatPin& pin) { return pin.beat % 2 != 0; });
+    for (auto& pin : grid.pins)
+        pin.beat /= 2;
+    return grid.tidied();
+}
+
+BeatGrid BeatGrid::tidied() const
+{
+    BeatGrid grid = *this;
+    grid.firstBeatSeconds = secondsOfBeat(0.0);
+    if (grid.pins.size() == 1)
+        grid.pins.clear(); // one pin says no more than where the beats are: a steady grid
+    return grid;
+}
+
+bool BeatGrid::valid() const
+{
+    if (!std::isfinite(bpm) || !std::isfinite(firstBeatSeconds))
+        return false;
+    for (size_t i = 0; i < pins.size(); ++i)
+    {
+        if (!std::isfinite(pins[i].seconds))
+            return false;
+        if (i > 0 && (pins[i].beat <= pins[i - 1].beat || pins[i].seconds <= pins[i - 1].seconds))
+            return false;
+    }
+    return true;
+}
 
 MusicalKey MusicalKey::transposed(int semitones) const
 {

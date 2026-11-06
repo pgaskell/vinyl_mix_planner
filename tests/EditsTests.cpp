@@ -298,6 +298,14 @@ TEST_CASE("Grid and key corrections are stored on the track and can be cleared")
     const double phrase = 64.0 * 60.0 / 124.0;
     CHECK(set.tracks.front().grid->firstBeatSeconds == Approx(10.0 - std::floor(10.0 / phrase) * phrase));
     CHECK_FALSE(edit::setTrackGrid(set, track, BeatGrid{0.0, 0.0}));
+    // With pins, renumbered by whole phrases the same way; the beats stay where they were.
+    const BeatGrid pinned = BeatGrid{124.0, 40.0}.pinned(64, 71.0);
+    REQUIRE(edit::setTrackGrid(set, track, pinned));
+    const auto& stored = *set.tracks.front().grid;
+    CHECK(stored.firstBeatSeconds < phrase);
+    CHECK(stored.secondsOfBeat(stored.beatAt(71.0)) == Approx(71.0));
+    CHECK(std::fmod(stored.beatAt(71.0) - 64.0, 64.0) == Approx(0.0).margin(1e-9));
+    CHECK_FALSE(edit::setTrackGrid(set, track, BeatGrid(124.0, 0.0, {{4, 2.0}, {8, 1.0}})));
     REQUIRE(edit::setTrackGrid(set, track, std::nullopt));
     CHECK_FALSE(set.tracks.front().grid);
 
@@ -369,12 +377,14 @@ TEST_CASE("Nudging a clip carries the clips after it, and not the ones before")
         return edit::moveClip(s, c.edited, 270.05, 0);
     }));
     CHECK(c.clip(c.before) == Chain{}.clip(c.before));
-    for (Id id : {c.incoming, c.next, c.afterGap})
+    for (Id id : {c.incoming, c.next})
     {
         const auto& was = *std::find_if(original.clips.begin(), original.clips.end(), [id](const Clip& x) { return x.id == id; });
         CHECK(c.clip(id).startSeconds == Approx(was.startSeconds + 0.05));
         CHECK(c.clip(id).pitchSteps == was.pitchSteps);
     }
+    // After a gap, nothing is mixed into: it stays.
+    CHECK(c.clip(c.afterGap) == Chain{}.clip(c.afterGap));
 }
 
 TEST_CASE("Changing a clip's tempo changes the incoming record's tempo and keeps their music together")
@@ -399,10 +409,8 @@ TEST_CASE("Changing a clip's tempo changes the incoming record's tempo and keeps
         CHECK(std::abs(drift / kRate) < 0.002);
     }
 
-    // The one after the gap keeps its 20 s gap, and its tempo.
-    const auto nextNow = c.timing(c.next);
-    CHECK(c.timing(c.afterGap).startSeconds() == Approx(nextNow.endSeconds() + 20.0));
-    CHECK(c.clip(c.afterGap).pitchSteps == 0);
+    // The one after the gap stays where it was, at its tempo.
+    CHECK(c.clip(c.afterGap) == Chain{}.clip(c.afterGap));
 }
 
 TEST_CASE("Pitch automation on a follower shifts with it")

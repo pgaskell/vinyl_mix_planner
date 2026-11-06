@@ -108,3 +108,33 @@ TEST_CASE("USB pair n plays on mixer channel n")
     CHECK(mixer.channelForUsbPair(3) == 3);
     CHECK(mixer.channelForUsbPair(4) == -1);
 }
+
+TEST_CASE("A DJM-900NXS2 follows the same controls, with USB A, USB B and RETURN AUX")
+{
+    REQUIRE(findMixerProfile("DJM-900NXS2") != nullptr);
+    CHECK(findMixerProfile("DJM-900NXS2") != findMixerProfile("DJM-900SRT"));
+    HardwareMixer mixer(*findMixerProfile("DJM-900NXS2"));
+    REQUIRE(mixer.numChannels() == 4);
+
+    // From its List of MIDI messages: CH3 HI is CC 0x0E, CH4 fader 0x14, the crossfader 0x0B.
+    feed(mixer, {{0xB0, 0x0E, 127}, {0xB0, 0x14, 64}, {0xB0, 0x0B, 0}});
+    CHECK(mixer.channel(2).high == 1.0);
+    CHECK(mixer.channel(3).fader == faderFromMidi(64));
+    CHECK(mixer.crossfader() == 0.0);
+
+    // Selectors: CH1 A 0x35, B 0x42, RETURN AUX 0x43; CH4 A 0x41, B 0x48, PHONO 0x40.
+    const std::pair<uint8_t, MixerInput> ch1[] = {
+        {0x35, MixerInput::Usb}, {0x42, MixerInput::UsbB}, {0x43, MixerInput::ReturnAux}, {0x34, MixerInput::Phono}};
+    for (const auto& [note, input] : ch1)
+    {
+        feed(mixer, {{0x90, note, 127}});
+        CHECK(mixer.channel(0).input == input);
+    }
+    feed(mixer, {{0x90, 0x48, 127}});
+    CHECK(mixer.channel(3).input == MixerInput::UsbB);
+    CHECK(isUsbInput(MixerInput::UsbB));
+    feed(mixer, {{0x90, 0x40, 127}});
+    CHECK(mixer.channel(3).input == MixerInput::Phono);
+    CHECK(std::string(mixerInputName(MixerInput::Usb, true)) == "USB A");
+    CHECK(mixer.channelForUsbPair(2) == 2);
+}

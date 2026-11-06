@@ -57,6 +57,15 @@ void Deck::render(const TrackAudio* track, double startFrame, double endFrame, f
                   int numFrames)
 {
     const int chunkMax = static_cast<int>(scratch_.size() / 2);
+    // Held still (a hold in the clip's nudges): silent, but it stays where it is, so letting go
+    // carries on from there instead of starting the record afresh.
+    if (track != nullptr && track == track_ && endFrame <= startFrame &&
+        std::abs(startFrame - position_) <= kSlewWindowSeconds * track->sampleRate)
+    {
+        std::fill_n(left, numFrames, 0.0f);
+        std::fill_n(right, numFrames, 0.0f);
+        return;
+    }
     if (track == nullptr || chunkMax == 0 || endFrame <= startFrame || startFrame >= track->frames)
     {
         renderSilence(left, right, numFrames);

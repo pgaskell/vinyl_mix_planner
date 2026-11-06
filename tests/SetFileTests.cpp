@@ -20,7 +20,8 @@ Set makeSet()
     set.numDecks = 3;
     set.tracks.push_back({1, "/Users/dj/Music/Björk/Ünïcode – track.flac", "Ünïcode", 15876000, 44100.0,
                           PressedSpeed::Rpm45, BeatGrid{123.456, 0.0123456789}, MusicalKey{10, true}});
-    set.tracks.push_back({2, "/Users/dj/Music/b.wav", "", 17280000, 48000.0, PressedSpeed::Unknown, {}, {}});
+    set.tracks.push_back({2, "/Users/dj/Music/b.wav", "", 17280000, 48000.0, PressedSpeed::Unknown,
+                          BeatGrid{125.0, 0.25, {{0, 0.25}, {300, 144.123456789}}}, {}});
 
     Clip clip;
     clip.id = 3;
@@ -34,9 +35,13 @@ Set makeSet()
     clip.points(Param::Low) = {{2000000, 0.0}, {2100000, 0.5}};
     clip.mixer = {0.8, 0.0, 0.5, 0.6125, 0.3, 0.2};
     clip.points(Param::Color) = {{2500000, 0.9}};
+    clip.actions = {{2200000, DeckAction::Kind::Nudge, -0.01, 0.1, {}, false},
+                    {2300000, DeckAction::Kind::Nudge, 0.0035, 0.035, {}, true},
+                    {2400000, DeckAction::Kind::Touch, 0.0, 0.1, {{0.0, 1.0}, {0.02, 0.0}, {0.5, 0.25}, {0.6, 1.0}}, false}};
     set.clips.push_back(clip);
+    set.links.push_back({5, 3, 2000000, 6, 1234567});
 
-    set.nextId = 4;
+    set.nextId = 7;
     return set;
 }
 
@@ -101,7 +106,7 @@ TEST_CASE("A stale nextId is repaired so new ids stay unique")
 {
     auto set = makeSet();
     set.nextId = 1;
-    CHECK(setFromJson(setToJson(set)).nextId == 4);
+    CHECK(setFromJson(setToJson(set)).nextId == 6); // after the link, id 5
 }
 
 TEST_CASE("Version 1 sets still open")

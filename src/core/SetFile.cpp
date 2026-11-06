@@ -76,7 +76,16 @@ std::string setToJson(const Set& set, const SetView* view)
                       {"sampleRate", t.sampleRate},
                       {"pressed", pressedToString(t.pressed)}};
         if (t.grid)
+        {
             track["grid"] = {{"bpm", t.grid->bpm}, {"firstBeat", t.grid->firstBeatSeconds}};
+            if (!t.grid->pins.empty())
+            {
+                json pins = json::array();
+                for (const auto& pin : t.grid->pins)
+                    pins.push_back({pin.beat, pin.seconds});
+                track["grid"]["pins"] = pins;
+            }
+        }
         if (t.key)
             track["key"] = t.key->name();
         tracks.push_back(track);
@@ -113,6 +122,33 @@ std::string setToJson(const Set& set, const SetView* view)
                            {"low", c.mixer.low},
                            {"trim", c.mixer.trim},
                            {"color", c.mixer.color}}}});
+        // Only clips with deck actions have them.
+        if (!c.actions.empty())
+        {
+            json actions = json::array();
+            for (const auto& action : c.actions)
+            {
+                json a = {{"frame", action.sourceFrame}};
+                if (action.kind == DeckAction::Kind::Nudge)
+                {
+                    a["kind"] = "nudge";
+                    a["seconds"] = action.seconds;
+                    a["speed"] = action.speed;
+                }
+                else
+                {
+                    a["kind"] = "touch";
+                    json speeds = json::array();
+                    for (const auto& point : action.touch)
+                        speeds.push_back({point.seconds, point.factor});
+                    a["speeds"] = speeds;
+                }
+                if (action.linked)
+                    a["linked"] = true;
+                actions.push_back(a);
+            }
+            clips.back()["actions"] = actions;
+        }
     }
 
     json doc = {{"format", kFormatName},
@@ -123,6 +159,17 @@ std::string setToJson(const Set& set, const SetView* view)
                 {"nextId", set.nextId},
                 {"tracks", tracks},
                 {"clips", clips}};
+    if (!set.links.empty())
+    {
+        json links = json::array();
+        for (const auto& link : set.links)
+            links.push_back({{"id", link.id},
+                             {"leader", link.leader},
+                             {"leaderFrame", link.leaderFrame},
+                             {"follower", link.follower},
+                             {"followerFrame", link.followerFrame}});
+        doc["links"] = links;
+    }
     if (view != nullptr)
     {
         // Per deck, the names of the controls whose automation is shown.
@@ -176,7 +223,11 @@ Set setFromJson(const std::string& text, SetView* view)
             track.sampleRate = t.at("sampleRate").get<double>();
             track.pressed = pressedFromString(t.at("pressed").get<std::string>());
             if (t.contains("grid"))
+            {
                 track.grid = BeatGrid{t["grid"].at("bpm").get<double>(), t["grid"].at("firstBeat").get<double>()};
+                for (const auto& pin : t["grid"].value("pins", json::array()))
+                    track.grid->pins.push_back({pin.at(0).get<int64_t>(), pin.at(1).get<double>()});
+            }
             if (t.contains("key"))
             {
                 track.key = MusicalKey::parse(t["key"].get<std::string>());
@@ -185,6 +236,8 @@ Set setFromJson(const std::string& text, SetView* view)
             }
             if (track.grid && !(track.grid->bpm > 0.0))
                 throw SetFileError("track " + std::to_string(track.id) + " has an invalid BPM");
+            if (track.grid && !track.grid->valid())
+                throw SetFileError("track " + std::to_string(track.id) + " has beat pins out of order");
             if (track.sampleRate <= 0.0)
                 throw SetFileError("track " + std::to_string(track.id) + " has an invalid sample rate");
             set.tracks.push_back(std::move(track));
@@ -223,8 +276,37 @@ Set setFromJson(const std::string& text, SetView* view)
             clip.mixer = {mixer.at("fader").get<double>(), mixer.at("high").get<double>(),
                           mixer.at("mid").get<double>(), mixer.at("low").get<double>(),
                           mixer.value("trim", 0.5), mixer.value("color", 0.5)}; // saved before trim/color: centred
+            if (c.contains("actions"))
+            {
+                for (const auto& action : c["actions"])
+                {
+                    const auto kind = action.at("kind").get<std::string>();
+                    DeckAction loaded;
+                    loaded.sourceFrame = action.at("frame").get<int64_t>();
+                    if (kind == "nudge")
+                    {
+                        loaded.seconds = action.at("seconds").get<double>();
+                        loaded.speed = action.at("speed").get<double>();
+                    }
+                    else if (kind == "touch")
+                    {
+                        loaded.kind = DeckAction::Kind::Touch;
+                        for (const auto& point : action.at("speeds"))
+                            loaded.touch.push_back({point.at(0).get<double>(), point.at(1).get<double>()});
+                    }
+                    else
+                        throw SetFileError("unknown deck action '" + kind + "'");
+                    loaded.linked = action.value("linked", false);
+                    clip.actions.push_back(std::move(loaded));
+                }
+                std::stable_sort(clip.actions.begin(), clip.actions.end(),
+                                 [](const auto& a, const auto& b) { return a.sourceFrame < b.sourceFrame; });
+            }
             set.clips.push_back(std::move(clip));
         }
+        for (const auto& l : doc.value("links", json::array()))
+            set.links.push_back({l.at("id").get<Id>(), l.at("leader").get<Id>(), l.at("leaderFrame").get<int64_t>(),
+                                 l.at("follower").get<Id>(), l.at("followerFrame").get<int64_t>()});
 
         if (view != nullptr)
         {
@@ -249,6 +331,8 @@ Set setFromJson(const std::string& text, SetView* view)
             set.nextId = std::max(set.nextId, t.id + 1);
         for (const auto& c : set.clips)
             set.nextId = std::max(set.nextId, c.id + 1);
+        for (const auto& l : set.links)
+            set.nextId = std::max(set.nextId, l.id + 1);
 
         return set;
     }

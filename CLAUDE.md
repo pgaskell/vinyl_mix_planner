@@ -75,8 +75,40 @@ DJM-900NXS2, and generic Core Audio devices).
 - `ClipTiming` is the only place that maps timeline <-> source; UI and engine must both use it.
 - All set changes go through `SetDocument::edit` with an `edit::` function (undo = whole-set snapshots;
   wrap drags in begin/endGesture). The engine gets an immutable `Schedule` rebuilt after each change.
+- Deck actions (`Clip::actions`) are what the DJ did to the record while it played: a lane of their
+  own per clip, not pitch automation. Each is a short curve of speed factors (`speedShape`: 1
+  untouched, 0 held still) that multiplies the pitch's, anchored to a source frame: a Nudge (from
+  the keys: `seconds` and a peak `speed`, in a set hand-like shape) or a Touch (measured from the
+  mouse). `ClipTiming` warps pitch time into timeline time with them (held still is a step), so the
+  engine and bounce play them; Deck holds its place on an empty range. Only forwards for now:
+  backwards (winding back, beat jumps, loops) needs reverse playback and a non-monotone warp.
+  Moving a clip or changing its pitch drops its actions (they were played against another record
+  at that tempo); being moved or re-pitched as a follower doesn't.
+- Mouse modifiers say which part of the turntable is touched (TimelineView's class comment):
+  stopped, dragging a record moves it; playing, the hand is on the record (a quick click selects,
+  pressing 150 ms or dragging records a touch that follows the mouse), and Option is the tone arm
+  (moves it, stopped or playing, and breaks its beat links). Edges trim either way. Shift keeps its meanings (fine drag, set downbeat). New
+  gestures should fit this: hand = plain, tone arm = Option, beat grid = Cmd (Cmd-click the downbeat and
+  Cmd-Shift-click another beat: `fitDownbeat`/`fitBeatGrid` fit the grid to the transients, the
+  clicks only need to be near; Cmd-drag a beat line pins it; Cmd-drag into another lane links the two
+  records there). The toolbar's mouse help (`app/MouseHelp.cpp`) lists every gesture: keep it in step.
+- Beat grids (`BeatGrid`) are steady from `firstBeatSeconds` at `bpm`, or bent by pins (beats the
+  DJ placed where they really are): even between pins, at `bpm` outside them; beat 0 stays the
+  downbeat. Anything that needs a beat's position or length goes through secondsOfBeat/beatAt/
+  periodAt, never `firstBeatSeconds + k * period`.
+- Beat links (`Set::links`, `BeatLink`): two moments, in two records on different decks, heard
+  together. The record that started later follows. `SetDocument::edit` runs `edit::solveLinks`
+  after every change, so links always win. It places the follower by its first link; with two or more links
+  it owns the follower's pitch (starting value and keypoints): one step setting for each run of links
+  it keeps within a nudge (50 ms) per gap, the fader moving just after the link where a run ends (a
+  tempo change in either record). It writes a nudge (`DeckAction::linked`) before each later link
+  for what the steps leave. All of it is something a
+  DJ could do on a turntable. Its linked nudges are rewritten each time; hand nudges stay and are
+  made up for. A follower's start belongs to its links (`moveClip` keeps it). Links it can't keep
+  are reported by `validate()`. Line Up Beats (`edit::lineUpBeats`) makes a link from the grids.
 - Nudges and pitch changes made from the UI go through `edit::withFollowers`, so the clips mixed in
-  after the edited one move and re-pitch with it. Timeline drags (arranging) don't.
+  after the edited one (while it plays, and into those in turn) move and re-pitch with it; a record
+  after a gap stays put. Timeline drags (arranging) don't.
 - Mixer settings are stored as knob/fader positions (0..1), never gains: the mixer model maps them.
 - Track audio is decoded once into `~/Library/Caches/org.vinylmixplanner.app/Audio` (float, with
   waveform peaks) and streamed: `engine/Prefetcher` preads chunks into a fixed, mlocked pool around
@@ -102,7 +134,8 @@ DJM-900NXS2, and generic Core Audio devices).
 - Hardware mixers: `core/HardwareMixer` holds each model's MIDI map (`MixerProfile`, matched by device
   name) and follows its controls. MIDI arrives as 0..127; knobs map with the centre detent exactly at 0.5.
   The DJM's control MIDI is off until its ON/OFF (UTILITY) button is pressed; selectors are tracked by
-  the last note-on (offs can go missing). USB pair n plays on channel n. Reading Core Audio inputs
+  the last note-on (offs can go missing). USB pair n plays on channel n. A turn of a TRIM knob sets the trim of
+  its deck's record (the one heard, else the next one), one undo step per turn; it's never a live control. Reading Core Audio inputs
   (any device, not just the built-in mic) needs microphone permission, or they read as silence.
 
 ## Building on this machine

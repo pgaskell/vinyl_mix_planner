@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Big Sur is the oldest macOS that runs on Apple Silicon.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
-project(VinylMixPlanner VERSION 0.5.0 LANGUAGES C CXX)
+project(VinylMixPlanner VERSION 0.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,6 +87,7 @@ target_sources(VinylMixPlanner PRIVATE
     src/app/Main.cpp
     src/app/MainComponent.cpp
     src/app/MidiMonitor.cpp
+    src/app/MouseHelp.cpp
     src/app/MixExporter.cpp
     src/app/MixerPanel.cpp
     src/app/ProblemReport.cpp
@@ -128,6 +129,7 @@ if(VMP_BUILD_TESTS)
         tests/MixerChannelTests.cpp
         tests/MotorTests.cpp
         tests/MusicalTests.cpp
+        tests/NudgeTests.cpp
         tests/PitchCurveTests.cpp
         tests/PitchTests.cpp
         tests/RecordingTests.cpp

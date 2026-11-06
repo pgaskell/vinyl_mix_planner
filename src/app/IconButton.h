@@ -15,7 +15,8 @@ enum class Icon
     FastForward,
     NextMix,
     ZoomIn,
-    ZoomOut
+    ZoomOut,
+    MouseHelp // a pointer with an "i"
 };
 
 // A button showing one of the usual symbols instead of text, drawn as a vector path on the

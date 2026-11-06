@@ -27,13 +27,32 @@ namespace vmp
 // double-click to delete, right-click a line or keypoint for more. The square at the clip start
 // is the starting value. Clicking anywhere else moves the clip as usual.
 //
-// Shift-click a clip to put its downbeat there: on the beat line under the click if there is one
-// (fixing which beat is "1" without moving the grid), otherwise exactly where clicked; add Option
-// to always use the exact spot. Shift-drag moves the clip finely.
+// Deck actions are drawn along the bottom of each clip as curves of the record's speed: pushes
+// above the line, held back below it. Stopped, drag one to move it along the music (Shift: finely).
+// Drag its number up or down to change how far it moves the music (Shift: finely).
+// Double-click one to delete it, right-click for more (a nudge's speed). Right-click a record to
+// insert a nudge or a hold where clicked, or to clean up its nudges over a stretch dragged out
+// with a rectangle.
 //
-// While playing, the view keeps the playhead centred and scrolls the tracks past it. Scrolling
-// away pauses that until the playhead reaches the centre of the view, or until showPlayhead().
-// Zooming while following zooms around the playhead.
+// Which part of the turntable a mouse gesture touches:
+// - Stopped: dragging a record moves it in time or to another deck (turning a stopped record by
+//   hand changes what's under the needle when it starts, which is the same thing).
+// - Playing: the hand is on the record. A quick click selects it; pressing a moment or dragging
+//   takes hold of it, and it follows the mouse (still: held still; left: pushed on, never back),
+//   written as a touch. Option-drag moves it instead, as the tone arm would. A record that isn't
+//   playing at the moment moves as when stopped.
+// - Dragging an edge trims (needle down, needle up), stopped or playing. Shift keeps its meanings.
+// - Cmd is the beat grid, not the record: Cmd-click the downbeat, then Cmd-Shift-click another
+//   beat (the next one is best), and the grid is fitted to the music's transients around them;
+//   the clicks only need to be near. Cmd-drag a beat line to where the beat really is in the
+//   waveform (Shift: finely) to pin it. The beats between it
+//   and the neighbouring pins spread out to fit; the first pin also pins the downbeat. A pin's
+//   handle (top of the waveform) drags without Cmd; double-click or right-click it to unpin.
+// - Cmd-drag from a record into another deck's lane links the two moments (on beat lines if
+//   near): the record mixed in later keeps them heard together (edit::solveLinks). Drag a link's
+//   dot to move that end; double-click or right-click it to delete. Moving a record with the
+//   tone arm (Option-drag, stopped or playing) breaks its links.
+//
 class TimelineView : public juce::Component, public juce::FileDragAndDropTarget, public juce::DragAndDropTarget
 {
 public:
@@ -66,6 +85,14 @@ public:
 
     // Adds the file to the set; returns the timeline time where the new clip ends.
     std::function<std::optional<double>(const juce::File&, int deck, double seconds)> onFileDropped;
+    // The timeline time being heard now (the playhead minus the output latency).
+    std::function<double()> heardSeconds;
+    // "Line up beats here" was chosen on a record (MainComponent::lineUpBeats).
+    std::function<void(Id clip, double seconds)> onLineUpBeats;
+    // Cmd-click: the downbeat of the track is about here. Cmd-Shift-click: so is another beat,
+    // with the last downbeat clicked on the track if there was one. Seconds in the track.
+    std::function<void(Id track, double seconds)> onDownbeatClicked;
+    std::function<void(Id track, std::optional<double> downbeat, double seconds)> onBeatClicked;
 
     void zoomIn();
     void zoomOut();
@@ -120,6 +147,7 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
+    bool keyPressed(const juce::KeyPress& key) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
 
@@ -161,7 +189,13 @@ private:
         TrimEnd,
         Scrub,
         Keypoint,
-        FlatLine // a flat stretch of automation moving up and down as one; a click adds a keypoint
+        FlatLine, // a flat stretch of automation moving up and down as one; a click adds a keypoint
+        Touch,    // a hand on a playing record
+        Action,       // a nudge or touch dragged along the music (stopped)
+        ActionAmount, // its number dragged up or down: how far it moves the music
+        BeatPin,      // Cmd: a beat line pinned and dragged to where the beat really is, or into
+                      // another lane to link it there
+        LinkEnd       // one end of a beat link dragged along its record's music
     };
 
     int numDecks() const { return document_.set().numDecks; }
@@ -203,6 +237,27 @@ private:
     // starting value); one end if it runs to the end of the clip. Empty on a slope.
     std::optional<std::vector<int>> flatLineEnds(const Clip& clip, Param param, int64_t frame) const;
     void setDownbeatAt(Id clip, float x, bool snapToBeatLine);
+    // Beat pins: the clip's beat line under the mouse (any drawn beat, within a few pixels), and a
+    // pin's handle at the top of the waveform.
+    struct BeatHit
+    {
+        Id clip = 0;
+        int64_t beat = 0;
+    };
+    std::optional<BeatHit> beatLineAt(juce::Point<float> position) const;
+    std::optional<BeatHit> beatPinAt(juce::Point<float> position) const;
+    void showBeatPinMenu(Id clip, int64_t beat);
+    // Beat links: drawn as a line between the two moments (upright when kept), a dot at each end.
+    struct LinkHit
+    {
+        Id link = 0;
+        Id clip = 0; // the end's record
+    };
+    std::optional<LinkHit> linkEndAt(juce::Point<float> position) const;
+    void paintLinks(juce::Graphics& g);
+    void showLinkMenu(Id link, Id clip);
+    // The clip's frame at x (by `timing`), on its beat line if one is within a few pixels.
+    int64_t snappedFrame(const Clip& clip, const ClipTiming& timing, float x) const;
     void navigatedByHand() { followSuspended_ = engine_.isPlaying(); }
     bool following() const { return follow_ && !followSuspended_ && engine_.isPlaying(); }
 
@@ -221,6 +276,50 @@ private:
     void paintBeatGuides(juce::Graphics& g);
     void paintAutomation(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
                          juce::Rectangle<int> area);
+    // The clip's nudges, in the strip along the bottom of its waveform; actionAt() finds one by position.
+    void paintActions(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, juce::Rectangle<int> waveArea);
+    juce::Rectangle<int> actionArea(const Clip& clip, const ClipTiming& timing, size_t index,
+                                   juce::Rectangle<int> waveArea) const;
+    std::optional<std::pair<Id, size_t>> actionAt(juce::Point<float> position) const;
+    // Where an action's number is drawn (beside its mark `box`), if there's room for it.
+    std::optional<juce::Rectangle<int>> actionLabelArea(juce::Rectangle<int> box) const;
+    std::optional<std::pair<Id, size_t>> actionLabelAt(juce::Point<float> position) const;
+    void showActionMenu(Id clip, size_t index);
+
+    // A hand on a playing record: recorded as a touch from the heard playhead (heardSeconds), written
+    // as far as it's gone (and a little ahead) while the mouse is down, and for good, with the
+    // records after it following, when let go. A click that never takes hold only selects.
+    struct HandOnRecord
+    {
+        Id clip = 0;
+        bool active = false;      // taken hold of (pressed long enough, or moved)
+        double pressClock = 0.0;  // when pressed (seconds, UI clock)
+        float mouseX = 0.0f;      // where the mouse is
+        float handX = 0.0f;       // where it was when it took hold
+        int64_t frame = 0;        // where the touch is, in the music
+        double start = 0.0;       // heard time it took hold
+        double music = 0.0;       // how far the hand has taken the record since (seconds)
+        std::vector<SpeedPoint> speeds;
+    };
+    double heardNow() const;
+    bool startTouch();
+    void sampleTouch();
+    void endTouch();
+    std::optional<size_t> touchIndex() const;
+    HandOnRecord touch_;
+
+    // Right-click on a record: insert a nudge or hold there, or clean up its nudges.
+    void showClipMenu(Id clip, double atSeconds);
+    // Cleaning up a record's nudges: after choosing it from the menu, drag a rectangle over the
+    // stretch to clean up (edit::tidyActions); Esc or a right-click cancels.
+    struct CleanUp
+    {
+        Id clip = 0;
+        bool dragging = false;
+        juce::Point<float> from, to;
+    };
+    std::optional<CleanUp> cleanUp_;
+    void paintCleanUp(juce::Graphics& g);
     // The set's curve, with its keypoints.
     void paintCurve(juce::Graphics& g, const Clip& clip, const ClipTiming& timing, Param param,
                     juce::Rectangle<int> area);
@@ -264,6 +363,17 @@ private:
     std::optional<ClipTiming> dragTiming_; // the clip's timing when a keypoint drag began
     Param dragParam_ = Param::Volume;
     int dragKeypoint_ = 0;
+    size_t dragAction_ = 0;
+    double dragActionStart_ = 0.0; // where the dragged action began, on the timeline
+    double dragActionAmount_ = 0.0; // its offset when the drag began
+    int64_t dragBeat_ = 0;          // the beat being pinned
+    bool dragHasBeat_ = false;      // on a beat line (pinning); else a Cmd-drag can only link
+    BeatGrid dragGrid_;             // the track's grid when the drag began
+    std::optional<BeatGrid> dragTrackGrid_; // its correction then (none: the detected grid)
+    int64_t dragLinkFrame_ = 0;     // where a link would start, in the dragged record
+    std::optional<juce::Point<float>> linkTo_; // the mouse, while over another lane
+    std::optional<std::pair<Id, double>> downbeatClick_; // the last Cmd-click: track, seconds in it
+    Id dragLink_ = 0;
     struct FlatLineDrag
     {
         AutomationHit hit;              // where it was pressed, for a click that adds a keypoint

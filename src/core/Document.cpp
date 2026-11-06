@@ -1,5 +1,7 @@
 #include "core/Document.h"
 
+#include "core/Edits.h"
+
 namespace vmp
 {
 
@@ -16,7 +18,10 @@ void SetDocument::reset(Set set)
 bool SetDocument::edit(const std::function<bool(Set&)>& change)
 {
     Set candidate = set_;
-    if (!change(candidate) || candidate == set_)
+    if (!change(candidate))
+        return false;
+    edit::solveLinks(candidate); // records follow their beat links whatever changed
+    if (candidate == set_)
         return false;
 
     // Within a gesture only the state before the first change is kept for undo.
@@ -65,6 +70,22 @@ void SetDocument::redo()
     stateId_ = redo_.back().stateId;
     redo_.pop_back();
     ++revision_;
+}
+
+const ClipTiming* SetDocument::timing(Id clipId) const
+{
+    if (timingsRevision_ != revision_)
+    {
+        timings_.clear();
+        timingsRevision_ = revision_;
+    }
+    if (auto it = timings_.find(clipId); it != timings_.end())
+        return &it->second;
+    const Clip* clip = set_.findClip(clipId);
+    const Track* track = clip != nullptr ? set_.findTrack(clip->trackId) : nullptr;
+    if (track == nullptr)
+        return nullptr;
+    return &timings_.emplace(clipId, ClipTiming(*clip, *track)).first->second;
 }
 
 } // namespace vmp

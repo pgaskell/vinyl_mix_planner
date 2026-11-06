@@ -15,7 +15,7 @@ inline const juce::Colour kAutomatedColour{0xffffb340};
 // The clip a deck's controls (mixer strip, pitch fader) work on. Stopped: the selected clip if it
 // is on that deck, otherwise the one under the playhead. Playing: the one under the playhead
 // comes first, so the controls move the record being heard. 0 if none.
-Id clipForDeck(const Set& set, int deck, Id selectedClip, double playhead, bool playing);
+Id clipForDeck(const SetDocument& document, int deck, Id selectedClip, double playhead, bool playing);
 
 // Vertical faders drawn with a wide flat cap on a thin groove, like a mixer's, instead of a dot.
 class FaderLookAndFeel : public juce::LookAndFeel_V4

@@ -7,18 +7,17 @@
 namespace vmp
 {
 
-Id clipForDeck(const Set& set, int deck, Id selectedClip, double playhead, bool playing)
+Id clipForDeck(const SetDocument& document, int deck, Id selectedClip, double playhead, bool playing)
 {
+    const Set& set = document.set();
     const Clip* selected = set.findClip(selectedClip);
     Id chosen = selected != nullptr && selected->deck == deck ? selected->id : 0;
     if (chosen == 0 || playing)
         for (const auto& clip : set.clips)
-            if (const Track* track = set.findTrack(clip.trackId); clip.deck == deck && track != nullptr)
-            {
-                const ClipTiming timing(clip, *track);
-                if (playhead >= timing.startSeconds() && playhead < timing.endSeconds())
+            if (clip.deck == deck && clip.startSeconds <= playhead) // a clip never starts before its start
+                if (const ClipTiming* timing = document.timing(clip.id);
+                    timing != nullptr && playhead >= timing->startSeconds() && playhead < timing->endSeconds())
                     chosen = clip.id;
-            }
     return chosen;
 }
 
@@ -118,24 +117,22 @@ PitchFader::~PitchFader()
 void PitchFader::show(Id clipId, double playhead)
 {
     clip_ = clipId;
-    const Set& set = document_.set();
-    const Clip* clip = set.findClip(clipId);
-    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
-    slider_.setEnabled(track != nullptr);
-    const bool automated = track != nullptr && !clip->points(Param::Pitch).empty();
+    const Clip* clip = document_.set().findClip(clipId);
+    const ClipTiming* timing = document_.timing(clipId);
+    slider_.setEnabled(timing != nullptr);
+    const bool automated = timing != nullptr && !clip->points(Param::Pitch).empty();
     slider_.setColour(juce::Slider::thumbColourId,
                       automated ? kAutomatedColour : getLookAndFeel().findColour(juce::Slider::thumbColourId));
     if (slider_.isMouseButtonDown()) // don't fight the user's drag
         return;
-    if (track == nullptr)
+    if (timing == nullptr)
     {
         slider_.setValue(0.0, juce::dontSendNotification);
         return;
     }
     // The pitch at the playhead, or at the nearer end of the clip when the playhead is outside it.
-    const ClipTiming timing(*clip, *track);
-    const double t = std::clamp(playhead, timing.startSeconds(), timing.endSeconds());
-    slider_.setValue((timing.speedAt(t) - 1.0) * 100.0, juce::dontSendNotification);
+    const double t = std::clamp(playhead, timing->startSeconds(), timing->endSeconds());
+    slider_.setValue((timing->speedAt(t) - 1.0) * 100.0, juce::dontSendNotification);
 }
 
 void PitchFader::resized()

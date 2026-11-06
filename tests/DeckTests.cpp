@@ -112,3 +112,26 @@ TEST_CASE("A small slip is reached smoothly, a large one jumps")
     CHECK(clickHeardAt(-0.010) == Approx(1.010).margin(0.002));
     CHECK(clickHeardAt(0.300) == Approx(0.700).margin(0.002)); // jumped
 }
+
+TEST_CASE("A held record is silent and carries on from where it was when let go")
+{
+    Deck deck;
+    deck.prepare(48000.0, kBlock);
+    const auto track = makeSine(1000.0, 48000.0, 4.0);
+    double position = 0.0;
+    play(deck, *track, position, 1.0, 48000.0, 24000);
+
+    std::vector<float> left(kBlock), right(kBlock);
+    for (int i = 0; i < 20; ++i) // held still: the same frame asked for again and again
+    {
+        deck.render(track.get(), position, position, left.data(), right.data(), kBlock);
+        CHECK(std::all_of(left.begin(), left.end(), [](float v) { return v == 0.0f; }));
+    }
+    // Let go: no restart (which would show as a gap while the resampler fills), the tone straight back.
+    const auto after = play(deck, *track, position, 1.0, 48000.0, 4800);
+    CHECK(measureFrequency(after, 48000.0) == Approx(1000.0).epsilon(1e-2));
+    float peak = 0.0f;
+    for (int i = 0; i < 64; ++i)
+        peak = std::max(peak, std::abs(after[static_cast<size_t>(i)]));
+    CHECK(peak > 0.1f);
+}

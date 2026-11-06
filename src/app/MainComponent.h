@@ -86,6 +86,7 @@ private:
     // Mixer moves while playing (MixRecorder): where they're placed in time, ending passes when
     // playback stops, jumps or a clip ends, and writing them into the set (Record and Trim modes).
     bool recordMove(int deck, Id clip, Param param, double value);
+    void setTrimFromMixer(int deck, double position);
     double heardSeconds() const { return engine_.playheadSeconds() - outputLatency_; }
     void updateRecording();
     // Writes the finished passes into the set (Latch, Trim) or drops them (Override).
@@ -113,8 +114,15 @@ private:
     };
     Selection selection() const;
     void select(Id clip);
-    void nudgeSelected(double seconds);
+    // Slips the selected record; with fromPlayhead, while it's heard, nudges it from there instead.
+    void nudgeSelected(double seconds, bool fromPlayhead = false);
     void nudgeSelectedByBeats(int beats);
+    // Links the record's next beat from `seconds` to the nearest beat of the record it's mixed with
+    // (the one on another deck that has been playing longest), by their grids.
+    void lineUpBeats(Id clip, double seconds);
+    // The grid from the DJ's Cmd-clicks, fitted to the music (seconds in the track).
+    void setDownbeatNear(Id track, double seconds);
+    void fitTempo(Id track, std::optional<double> downbeat, double seconds);
     void changeSelectedPitch(int steps, bool absolute = false);
     // Changes the selected track's beat grid; `change` gets the current grid and the source
     // time (seconds) under the playhead, or nullopt when the playhead is outside the clip.
@@ -179,6 +187,7 @@ private:
     juce::TextButton zoomSetButton_{"Mix"}, zoomClipButton_{"Clip"},
         zoomTransitionButton_{"Transition"}, zoomBeatsButton_{"Beats"};
     juce::ToggleButton followButton_{"Follow"};
+    IconButton mouseHelpButton_{Icon::MouseHelp};
     juce::ComboBox modeBox_, decksBox_;
     juce::TextButton settingsButton_{"Audio..."};
     juce::Label deviceLabel_;
@@ -204,6 +213,8 @@ private:
     std::vector<MixerMidi> pendingMixerMidi_; // guarded by midiLock_
     // The hardware mixer the audio device is (direct out), followed from its MIDI.
     std::optional<HardwareMixer> hardwareMixer_;
+    bool hardwareTrimGesture_ = false; // a TRIM knob is being turned (one undo step)
+    double lastHardwareTrimMs_ = 0.0;
     bool hardwareControl_ = true;
     MixRecorder recorder_;
     AutomationMode controlMode_ = AutomationMode::Latch;

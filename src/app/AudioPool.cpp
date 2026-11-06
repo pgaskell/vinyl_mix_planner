@@ -264,6 +264,48 @@ const AudioPool::Entry* AudioPool::find(const std::string& path) const
     return it == entries_.end() ? nullptr : &it->second;
 }
 
+void AudioPool::fitGrid(const std::string& path, GridFit fit, std::function<void(std::optional<BeatGrid>)> done)
+{
+    const auto* entry = find(path);
+    if (entry == nullptr || entry->status != Status::Ready)
+    {
+        done(std::nullopt);
+        return;
+    }
+    juce::WeakReference<AudioPool> self(this);
+    pool_.addJob([this, self, path, audio = entry->audio, job = std::move(fit), then = std::move(done)] {
+        std::shared_ptr<const std::vector<float>> signal;
+        double rate = 0.0;
+        {
+            const std::lock_guard lock(signalMutex_);
+            if (signalPath_ == path)
+            {
+                signal = signal_;
+                rate = signalRate_;
+            }
+        }
+        if (signal == nullptr)
+        {
+            std::shared_ptr<const TrackAudio> whole = audio;
+            if (audio->stream != nullptr)
+                whole = audio->stream->readAll();
+            if (whole != nullptr)
+            {
+                signal = std::make_shared<const std::vector<float>>(analysisSignal(*whole, rate));
+                const std::lock_guard lock(signalMutex_);
+                signalPath_ = path;
+                signal_ = signal;
+                signalRate_ = rate;
+            }
+        }
+        auto grid = signal != nullptr ? job(*signal, rate) : std::nullopt;
+        juce::MessageManager::callAsync([self, then, grid] {
+            if (self.get() != nullptr)
+                then(grid);
+        });
+    });
+}
+
 std::optional<BeatGrid> AudioPool::gridFor(const Track& track) const
 {
     if (track.grid)

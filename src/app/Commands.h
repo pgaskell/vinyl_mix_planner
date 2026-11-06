@@ -69,7 +69,8 @@ enum Command : juce::CommandID
     kCycleAutomationMode,
     kReportProblem,
     kCycleLaneHeight,
-    kLastCommand = kCycleLaneHeight
+    kLineUpBeats,
+    kLastCommand = kLineUpBeats
 };
 
 } // namespace vmp

@@ -52,13 +52,19 @@ Needs macOS 11 or later, on Apple Silicon or Intel.
 ## What it does
 
 - A timeline with a lane per deck, 3-band waveforms and beat lines for matching by eye
-- Pitch, nudge and EQ by ear while the mix plays, the way you would on the decks
+- Pitch, nudge and EQ by ear while the mix plays, the way you would on the decks; nudges and
+  hand touches on the record are recorded and can be moved or resized afterwards
 - Tempo and key detection, with the key shown after pitch in standard or Camelot notation
+- Beat grids you can fix: click the downbeat and another beat and the tempo is found from the
+  music; pin beats where a record drifts or changes tempo
+- Beat links: tie a moment in one record to a moment in another, and the record mixed in later
+  keeps them together with the pitch fader and nudges, as you would by ear
 - Automation for pitch, volume, EQ and a COLOR filter through each transition, drawn by hand or
   recorded by playing the mix on the on-screen mixer (Latch), adjusted afterwards (Trim, Trim All),
   or just practised (Override)
 - Plays through your laptop, or one deck per channel into a club mixer (e.g. Pioneer DJM-900)
-- Follows a Pioneer DJM-900SRT over USB MIDI and shows its fader and EQ positions on screen
+- Follows a Pioneer DJM-900SRT or DJM-900NXS2 over USB MIDI and shows its fader and EQ positions
+  on screen; its TRIM knobs set each record's level
 - Checks for things you can't do live, like two records on one deck or no time to change records
 - Exports the finished mix to WAV, AIFF, FLAC or Ogg Vorbis
 

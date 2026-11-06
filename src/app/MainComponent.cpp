@@ -1,6 +1,7 @@
 #include "app/MainComponent.h"
 
 #include "app/Commands.h"
+#include "app/MouseHelp.h"
 #include "app/ProblemReport.h"
 #include "app/TimeFormat.h"
 #include "core/Edits.h"
@@ -68,6 +69,12 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     timeline_.onSelectionChanged = [this](Id id) {
         inspector_.setClip(id);
         commands_.commandStatusChanged();
+    };
+    timeline_.heardSeconds = [this] { return heardSeconds(); };
+    timeline_.onLineUpBeats = [this](Id clip, double seconds) { lineUpBeats(clip, seconds); };
+    timeline_.onDownbeatClicked = [this](Id track, double seconds) { setDownbeatNear(track, seconds); };
+    timeline_.onBeatClicked = [this](Id track, std::optional<double> downbeat, double seconds) {
+        fitTempo(track, downbeat, seconds);
     };
     timeline_.onFileDropped = [this](const juce::File& file, int deck, double start) {
         return addFile(file, deck, start);
@@ -169,6 +176,12 @@ MainComponent::MainComponent(juce::PropertiesFile& settings)
     commandButton(followButton_, kToggleFollow, "Keep the playhead in view while playing (F)");
     commandButton(settingsButton_, kAudioSettings, "Audio and MIDI device settings");
     followButton_.setToggleState(true, juce::dontSendNotification);
+    mouseHelpButton_.setWantsKeyboardFocus(false);
+    mouseHelpButton_.setTooltip("What clicking and the modifier keys do");
+    mouseHelpButton_.onClick = [this] {
+        juce::CallOutBox::launchAsynchronously(std::make_unique<MouseHelp>(), mouseHelpButton_.getScreenBounds(), nullptr);
+    };
+    addAndMakeVisible(mouseHelpButton_);
 
     timeLabel_.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 16.0f, juce::Font::plain));
     addAndMakeVisible(timeLabel_);
@@ -341,11 +354,32 @@ void MainComponent::timerCallback()
         const juce::ScopedLock lock(midiLock_);
         mixerMidi.swap(pendingMixerMidi_);
     }
+    std::array<std::optional<double>, kMaxDecks> trimsBefore{};
+    if (hardwareMixer_)
+        for (int d = 0; d < std::min(kMaxDecks, hardwareMixer_->numChannels()); ++d)
+            trimsBefore[static_cast<size_t>(d)] = hardwareMixer_->channel(d).trim;
     for (const auto& m : mixerMidi)
     {
         if (!hardwareMixer_ || &hardwareMixer_->profile() != m.profile)
+        {
             hardwareMixer_.emplace(*m.profile);
+            trimsBefore = {};
+        }
         hardwareMixer_->handle(m.data.data(), m.data.size());
+    }
+    // A TRIM knob turned (from a position already known: a snapshot or the first report only
+    // tells us where it is) sets the trim of its deck's record, when the mixer is in use.
+    if (hardwareMixer_ && (engine_.outputMode() == OutputMode::DirectOut || controlsInternalMix()))
+        for (int d = 0; d < std::min(kMaxDecks, hardwareMixer_->numChannels()); ++d)
+        {
+            const auto before = trimsBefore[static_cast<size_t>(d)], now = hardwareMixer_->channel(d).trim;
+            if (before && now && std::abs(*now - *before) > 1e-9) // MIDI steps are 1/128 apart
+                setTrimFromMixer(d, *now);
+        }
+    if (hardwareTrimGesture_ && juce::Time::getMillisecondCounterHiRes() - lastHardwareTrimMs_ > 600.0)
+    {
+        hardwareTrimGesture_ = false;
+        document_.endGesture();
     }
     applyHardwareControls();
     if (hardwareMixer_ && engine_.outputMode() == OutputMode::DirectOut)
@@ -392,8 +426,43 @@ void MainComponent::applyHardwareControls()
         live(Param::Mid, state.mid);
         live(Param::Low, state.low);
         live(Param::Color, state.color);
-        engine_.setLiveTrim(d, state.trim);
+        // The TRIM knob isn't a live control: turning it sets the record's trim (setTrimFromMixer).
     }
+}
+
+void MainComponent::setTrimFromMixer(int deck, double position)
+{
+    // The record the knob is for: the one heard on the deck, or else the next one on it (being
+    // cued up).
+    const double at = engine_.isPlaying() ? heardSeconds() : engine_.playheadSeconds();
+    const Clip* playing = nullptr;
+    const Clip* next = nullptr;
+    double nextStart = 0.0;
+    for (const auto& clip : document_.set().clips)
+    {
+        const ClipTiming* timing = document_.timing(clip.id);
+        if (clip.deck != deck || timing == nullptr || timing->endSeconds() <= at)
+            continue;
+        if (timing->startSeconds() <= at)
+            playing = &clip;
+        else if (next == nullptr || timing->startSeconds() < nextStart)
+        {
+            next = &clip;
+            nextStart = timing->startSeconds();
+        }
+    }
+    const Clip* target = playing != nullptr ? playing : next;
+    if (target == nullptr)
+        return;
+    // A turn is one undo step: it ends when the knob has been still for a moment.
+    if (!hardwareTrimGesture_ && !document_.inGesture())
+    {
+        document_.beginGesture();
+        hardwareTrimGesture_ = true;
+    }
+    lastHardwareTrimMs_ = juce::Time::getMillisecondCounterHiRes();
+    const Id id = target->id;
+    document_.edit([&](Set& s) { return edit::setClipTrim(s, id, position); });
 }
 
 bool MainComponent::recordMove(int deck, Id clipId, Param param, double value)
@@ -402,17 +471,15 @@ bool MainComponent::recordMove(int deck, Id clipId, Param param, double value)
     // and Trim passes are written into the set (finishPasses).
     if (!engine_.isPlaying())
         return false;
-    const Set& set = document_.set();
-    const Clip* clip = set.findClip(clipId);
-    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
-    if (track == nullptr || clip->deck != deck)
+    const Clip* clip = document_.set().findClip(clipId);
+    const ClipTiming* timing = document_.timing(clipId);
+    if (timing == nullptr || clip->deck != deck)
         return false;
     // Placed where it was heard: the DJ reacts to what comes out of the speakers.
     const double seconds = heardSeconds();
-    const ClipTiming timing(*clip, *track);
-    if (seconds < timing.startSeconds() || seconds >= timing.endSeconds())
+    if (seconds < timing->startSeconds() || seconds >= timing->endSeconds())
         return false;
-    recorder_.move(deck, clipId, timing.endSeconds(), param, value, seconds, modeFor(deck, param));
+    recorder_.move(deck, clipId, timing->endSeconds(), param, value, seconds, modeFor(deck, param));
     applyHardwareControls(); // heard now, not at the next tick
     return true;
 }
@@ -777,18 +844,119 @@ void MainComponent::select(Id clip)
     inspector_.setClip(clip);
 }
 
-void MainComponent::nudgeSelected(double seconds)
+void MainComponent::nudgeSelected(double seconds, bool fromPlayhead)
 {
     const auto sel = selection();
     if (!sel)
         return;
     const Id id = sel.clip->id;
+    // While the record is heard, a nudge is a hand on the platter: written into its nudge lane at
+    // the music playing now, so the music before stays where it was.
+    const double heard = heardSeconds();
+    if (fromPlayhead && engine_.isPlaying() && heard >= sel.timing->startSeconds() && heard < sel.timing->endSeconds())
+    {
+        document_.edit([&](Set& s) {
+            return edit::withFollowers(s, id, [&](Set& t) { return edit::addNudge(t, id, heard, seconds); });
+        });
+        return;
+    }
     const double start = sel.clip->startSeconds + seconds;
     const int deck = sel.clip->deck;
     // The records mixed in after this one move with it.
     document_.edit([&](Set& s) {
         return edit::withFollowers(s, id, [&](Set& t) { return edit::moveClip(t, id, start, deck); });
     });
+}
+
+void MainComponent::lineUpBeats(Id clipId, double seconds)
+{
+    const Set& set = document_.set();
+    const Clip* clip = set.findClip(clipId);
+    const Track* track = clip != nullptr ? set.findTrack(clip->trackId) : nullptr;
+    const ClipTiming* timing = document_.timing(clipId);
+    if (track == nullptr || timing == nullptr || seconds < timing->startSeconds() || seconds >= timing->endSeconds())
+        return;
+    const auto grid = pool_.gridFor(*track);
+    const Clip* reference = nullptr;
+    for (const auto& other : set.clips)
+    {
+        const ClipTiming* t = document_.timing(other.id);
+        if (other.deck == clip->deck || t == nullptr || seconds < t->startSeconds() || seconds >= t->endSeconds())
+            continue;
+        if (reference == nullptr || t->startSeconds() < document_.timing(reference->id)->startSeconds())
+            reference = &other;
+    }
+    const Track* referenceTrack = reference != nullptr ? set.findTrack(reference->trackId) : nullptr;
+    const auto referenceGrid = referenceTrack != nullptr ? pool_.gridFor(*referenceTrack) : std::nullopt;
+    if (reference == nullptr)
+    {
+        showError("Nothing to line up with", "No record on another deck is playing there.");
+        return;
+    }
+    if (!grid || !referenceGrid)
+    {
+        showError("No beat grid", "Both records need a beat grid. Type a BPM in the inspector first.");
+        return;
+    }
+    const Id referenceId = reference->id;
+    // A link: the record mixed in later keeps it from now on (edit::solveLinks).
+    document_.edit([&](Set& s) {
+        return edit::lineUpBeats(s, clipId, *grid, referenceId, *referenceGrid, seconds).has_value();
+    });
+}
+
+void MainComponent::setDownbeatNear(Id trackId, double seconds)
+{
+    const Track* track = document_.set().findTrack(trackId);
+    const auto grid = track != nullptr ? pool_.gridFor(*track) : std::nullopt;
+    if (!grid)
+        return; // remembered by the timeline for a Cmd-Shift-click
+    if (!grid->pins.empty())
+    {
+        // The pins say where the beats are: the nearest one becomes the downbeat.
+        const BeatGrid updated = grid->withDownbeatAt(seconds);
+        document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, updated); });
+        return;
+    }
+    const double bpm = grid->bpm;
+    pool_.fitGrid(
+        track->path, [bpm, seconds](const std::vector<float>& mono, double rate) {
+            return std::optional(fitDownbeat(mono, rate, bpm, seconds));
+        },
+        [this, trackId](std::optional<BeatGrid> fitted) {
+            if (fitted && document_.set().findTrack(trackId) != nullptr)
+                document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, *fitted); });
+        });
+}
+
+void MainComponent::fitTempo(Id trackId, std::optional<double> downbeat, double seconds)
+{
+    const Track* track = document_.set().findTrack(trackId);
+    if (track == nullptr)
+        return;
+    if (!downbeat)
+    {
+        // No downbeat clicked on this track: the bar line before the click, if there's a grid.
+        const auto grid = pool_.gridFor(*track);
+        if (!grid)
+        {
+            showError("Cmd-click the downbeat first",
+                      "Then Cmd-Shift-click another beat, and the tempo is found from the music around them.");
+            return;
+        }
+        downbeat = grid->secondsOfBeat(4.0 * std::floor(grid->beatAt(seconds - 0.2) / 4.0));
+    }
+    const double from = *downbeat;
+    pool_.fitGrid(
+        track->path, [from, seconds](const std::vector<float>& mono, double rate) {
+            return fitBeatGrid(mono, rate, from, seconds);
+        },
+        [this, trackId](std::optional<BeatGrid> fitted) {
+            if (!fitted)
+                showError("No tempo found", "There's no steady beat there to fit, or the clicks are too close together.");
+            else if (document_.set().findTrack(trackId) != nullptr)
+                document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, *fitted); });
+        });
 }
 
 void MainComponent::nudgeSelectedByBeats(int beats)
@@ -799,7 +967,7 @@ void MainComponent::nudgeSelectedByBeats(int beats)
         return;
     // A beat as heard at the playhead (or the clip start if the playhead is elsewhere).
     const double at = std::clamp(engine_.playheadSeconds(), sel.timing->startSeconds(), sel.timing->endSeconds());
-    nudgeSelected(beats * grid->periodSeconds() / sel.timing->speedAt(at));
+    nudgeSelected(beats * grid->periodAt(sel.timing->sourceFrameAt(at) / sel.track->sampleRate) / sel.timing->speedAt(at));
 }
 
 void MainComponent::changeSelectedPitch(int steps, bool absolute)
@@ -843,9 +1011,12 @@ void MainComponent::editSelectedGrid(
 
 namespace
 {
-// A new tempo for the grid that keeps the beat nearest `pivot` (source seconds) where it is.
+// A new tempo for the grid that keeps the beat nearest `pivot` (source seconds) where it is. With
+// pins, the tempo is only that before the first and after the last: the pins stay put.
 BeatGrid retempo(const BeatGrid& grid, double bpm, std::optional<double> pivot)
 {
+    if (!grid.pins.empty())
+        return {bpm, grid.firstBeatSeconds, grid.pins};
     const double period = grid.periodSeconds();
     const double anchor = pivot ? *pivot : grid.firstBeatSeconds;
     const double k = std::round((anchor - grid.firstBeatSeconds) / period);
@@ -866,7 +1037,7 @@ double MainComponent::beatSecondsAtPlayhead() const
         const ClipTiming* timing = timeline_.timingOf(clip.id);
         if (!grid || timing == nullptr || playhead < timing->startSeconds() || playhead >= timing->endSeconds())
             continue;
-        const double beat = grid->periodSeconds() / timing->speedAt(playhead);
+        const double beat = grid->periodAt(timing->sourceFrameAt(playhead) / track->sampleRate) / timing->speedAt(playhead);
         if (clip.id == timeline_.selectedClip())
             return beat;
         if (!best)
@@ -1171,19 +1342,19 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
         key(KeyPress::tabKey, shift);
         break;
     case kNudgeEarlier:
-        define("Nudge Earlier", "Slip the selected record 10 ms earlier", "Clip", hasClip);
+        define("Nudge Earlier", "Push the selected record 10 ms earlier (while playing, from the music playing now)", "Clip", hasClip);
         key(KeyPress::leftKey);
         break;
     case kNudgeLater:
-        define("Nudge Later", "Slip the selected record 10 ms later", "Clip", hasClip);
+        define("Nudge Later", "Hold the selected record back 10 ms (while playing, from the music playing now)", "Clip", hasClip);
         key(KeyPress::rightKey);
         break;
     case kNudgeEarlierFine:
-        define("Nudge Earlier (Fine)", "Slip the selected record 1 ms earlier", "Clip", hasClip);
+        define("Nudge Earlier (Fine)", "Push the selected record 1 ms earlier (while playing, from the music playing now)", "Clip", hasClip);
         key(KeyPress::leftKey, cmd);
         break;
     case kNudgeLaterFine:
-        define("Nudge Later (Fine)", "Slip the selected record 1 ms later", "Clip", hasClip);
+        define("Nudge Later (Fine)", "Hold the selected record back 1 ms (while playing, from the music playing now)", "Clip", hasClip);
         key(KeyPress::rightKey, cmd);
         break;
     case kNudgeBarsEarlier:
@@ -1197,6 +1368,11 @@ void MainComponent::getCommandInfo(juce::CommandID id, juce::ApplicationCommandI
     case kShowPlayhead:
         define("Show Playhead", "Scroll to the playhead and follow it again", "View");
         key('p');
+        break;
+    case kLineUpBeats:
+        define("Line Up Beats", "Link the selected record's next beat to the other record's nearest, by their grids "
+               "(from the music playing now, or at the playhead)", "Clip", hasClip);
+        key('m');
         break;
     case kNudgeBeatEarlier:
         define("Nudge One Beat Earlier", "Slip the selected record one beat earlier", "Clip", hasClip);
@@ -1423,16 +1599,16 @@ bool MainComponent::perform(const InvocationInfo& info)
         break;
     }
     case kNudgeEarlier:
-        nudgeSelected(-kNudgeSeconds);
+        nudgeSelected(-kNudgeSeconds, true);
         break;
     case kNudgeLater:
-        nudgeSelected(kNudgeSeconds);
+        nudgeSelected(kNudgeSeconds, true);
         break;
     case kNudgeEarlierFine:
-        nudgeSelected(-kFineNudgeSeconds);
+        nudgeSelected(-kFineNudgeSeconds, true);
         break;
     case kNudgeLaterFine:
-        nudgeSelected(kFineNudgeSeconds);
+        nudgeSelected(kFineNudgeSeconds, true);
         break;
     case kNudgeBarsEarlier:
         nudgeSelectedByBeats(-16);
@@ -1442,6 +1618,10 @@ bool MainComponent::perform(const InvocationInfo& info)
         break;
     case kShowPlayhead:
         timeline_.showPlayhead();
+        break;
+    case kLineUpBeats:
+        if (const auto sel = selection())
+            lineUpBeats(sel.clip->id, engine_.isPlaying() ? heardSeconds() : playhead);
         break;
     case kNudgeBeatEarlier:
         nudgeSelectedByBeats(-1);
@@ -1477,7 +1657,7 @@ bool MainComponent::perform(const InvocationInfo& info)
 
     case kGridDownbeatHere:
         editSelectedGrid([](const BeatGrid& grid, std::optional<double> here) -> std::optional<BeatGrid> {
-            return here ? BeatGrid{grid.bpm, *here} : grid;
+            return here ? grid.withDownbeatAt(*here) : grid;
         });
         break;
     case kGridEarlier:
@@ -1485,7 +1665,7 @@ bool MainComponent::perform(const InvocationInfo& info)
     {
         const double shift = info.commandID == kGridEarlier ? -kGridShiftSeconds : kGridShiftSeconds;
         editSelectedGrid([shift](const BeatGrid& grid, std::optional<double>) -> std::optional<BeatGrid> {
-            return BeatGrid{grid.bpm, grid.firstBeatSeconds + shift};
+            return grid.shifted(shift);
         });
         break;
     }
@@ -1496,6 +1676,8 @@ bool MainComponent::perform(const InvocationInfo& info)
     {
         const auto command = info.commandID;
         editSelectedGrid([command](const BeatGrid& grid, std::optional<double> here) -> std::optional<BeatGrid> {
+            if (!grid.pins.empty() && (command == kGridHalve || command == kGridDouble))
+                return command == kGridHalve ? grid.halved() : grid.doubled();
             const double bpm = command == kGridHalve    ? grid.bpm / 2.0
                                : command == kGridDouble ? grid.bpm * 2.0
                                : command == kGridSlower ? grid.bpm - kGridBpmStep
@@ -1650,7 +1832,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int index, const juce::String&)
         add({kPitchUp, kPitchDown, kPitchUpCoarse, kPitchDownCoarse, kPitchReset});
         menu.addSeparator();
         add({kNudgeEarlier, kNudgeLater, kNudgeEarlierFine, kNudgeLaterFine, kNudgeBeatEarlier, kNudgeBeatLater,
-             kNudgeBarsEarlier, kNudgeBarsLater});
+             kNudgeBarsEarlier, kNudgeBarsLater, kLineUpBeats});
         menu.addSeparator();
         add({kTrimStartToPlayhead, kTrimEndToPlayhead});
         break;
@@ -1819,7 +2001,7 @@ void MainComponent::resized()
     bar.removeFromLeft(10);
     for (auto [button, width] : {std::pair<juce::Button*, int>{&zoomOutButton_, 30}, {&zoomInButton_, 30},
                                  {&zoomSetButton_, 44}, {&zoomClipButton_, 44}, {&zoomTransitionButton_, 76},
-                                 {&zoomBeatsButton_, 50}, {&followButton_, 66}})
+                                 {&zoomBeatsButton_, 50}, {&followButton_, 66}, {&mouseHelpButton_, 30}})
     {
         button->setBounds(bar.removeFromLeft(width));
         bar.removeFromLeft(3);

@@ -36,6 +36,8 @@ public:
     // If startFrame is close to where the deck actually is, it slews: it plays slightly faster
     // or slower until it catches up, like nudging a platter, so small edits during playback
     // (nudges, pitch changes) don't click. Anything further away, or another track, jumps.
+    // An empty range near where the deck is (the record held still) is silence, and the deck
+    // stays put.
     void render(const TrackAudio* track, double startFrame, double endFrame, float* left, float* right,
                 int numFrames);
 

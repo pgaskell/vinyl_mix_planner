@@ -136,15 +136,15 @@ juce::String Inspector::harmonyText(const Clip& clip, const Track& track, juce::
 {
     // The clip this one is mixed with: playing when it comes in, or failing that when it goes out.
     const Set& set = document_.set();
-    const ClipTiming timing(clip, track);
+    const ClipTiming& timing = *document_.timing(clip.id);
     const Clip* other = nullptr;
     double mixStart = 0.0; // where the two start playing together
     for (const auto& candidate : set.clips)
     {
-        const Track* t = set.findTrack(candidate.trackId);
-        if (candidate.deck == clip.deck || t == nullptr)
+        const ClipTiming* timingOfCandidate = document_.timing(candidate.id);
+        if (candidate.deck == clip.deck || timingOfCandidate == nullptr)
             continue;
-        const ClipTiming ct(candidate, *t);
+        const ClipTiming& ct = *timingOfCandidate;
         const bool overlaps = ct.startSeconds() < timing.endSeconds() && timing.startSeconds() < ct.endSeconds();
         const bool playingAtStart = ct.startSeconds() <= timing.startSeconds() && ct.endSeconds() > timing.startSeconds();
         if (overlaps && (other == nullptr || playingAtStart))
@@ -164,7 +164,7 @@ juce::String Inspector::harmonyText(const Clip& clip, const Track& track, juce::
 
     // Compared as heard where the mix starts, after any pitch automation up to then.
     const auto a = pitchedKey(*mine, timing.speedAt(mixStart));
-    const auto b = pitchedKey(*theirs, ClipTiming(*other, otherTrack).speedAt(mixStart));
+    const auto b = pitchedKey(*theirs, document_.timing(other->id)->speedAt(mixStart));
     const auto relation = harmony(a.key, b.key);
     const double detune = std::abs(a.cents - b.cents);
 
@@ -201,7 +201,7 @@ void Inspector::refresh()
         return;
     }
 
-    const ClipTiming clipTiming(*clip, *track);
+    const ClipTiming& clipTiming = *document_.timing(clip_);
     const double speed = clipTiming.speedAt(clipTiming.startSeconds()); // as it comes in
     title_.setText(juce::CharPointer_UTF8(track->title.c_str()), juce::dontSendNotification);
     juce::String details = "Deck " + juce::String(clip->deck + 1) + "   pressed at " + pressedText(track->pressed);
@@ -262,7 +262,8 @@ void Inspector::applyBpm(const juce::String& text)
         return;
     }
     const auto current = pool_.gridFor(*track);
-    const BeatGrid grid{bpm, current ? current->firstBeatSeconds : 0.0};
+    BeatGrid grid = current.value_or(BeatGrid{bpm, 0.0});
+    grid.bpm = bpm; // the pins, if any, stay where they are
     const Id trackId = track->id;
     if (!document_.edit([&](Set& s) { return edit::setTrackGrid(s, trackId, grid); }))
         refresh();

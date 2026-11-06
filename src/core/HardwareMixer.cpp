@@ -7,12 +7,13 @@ namespace vmp
 
 namespace
 {
-// From the DJM-900SRT operating instructions (MIDI assignment map), checked against the
-// mixer's snapshot. Serato's deck names don't matter here: USB pair n plays on channel n.
-MixerProfile makeDjm900Srt()
+// The DJM-900 family's MIDI map, from the DJM-900SRT operating instructions (MIDI assignment
+// map), checked against the SRT's snapshot. Serato's and rekordbox's deck names don't matter
+// here: USB pair n plays on channel n.
+MixerProfile makeDjm900(std::string name)
 {
     MixerProfile p;
-    p.name = "DJM-900SRT";
+    p.name = std::move(name);
     //            trim hi  mid low color fader assign pair
     p.channels = {{1, 2, 3, 4, 5, 17, 65, 0},
                   {6, 7, 8, 9, 10, 18, 66, 1},
@@ -30,9 +31,25 @@ MixerProfile makeDjm900Srt()
     return p;
 }
 
+// The DJM-900NXS2's "List of MIDI messages" (version 1.00) gives the same controls and notes as
+// the SRT, and two more selector positions per channel: USB B (its second USB port, each port
+// its own 12-out sound card, pair n on channel n) and RETURN AUX. Tried on a real one (2026-11-05).
+MixerProfile makeDjm900Nxs2()
+{
+    MixerProfile p = makeDjm900("DJM-900NXS2");
+    p.twoUsbPorts = true;
+    p.snapshotKnown = false; // the NXS2's manual doesn't say START/STOP sends one
+    for (int c = 0; c < 4; ++c)
+    {
+        p.inputs.push_back({66 + 2 * c, c, MixerInput::UsbB});
+        p.inputs.push_back({67 + 2 * c, c, MixerInput::ReturnAux});
+    }
+    return p;
+}
+
 const std::vector<MixerProfile>& profiles()
 {
-    static const std::vector<MixerProfile> all{makeDjm900Srt()};
+    static const std::vector<MixerProfile> all{makeDjm900("DJM-900SRT"), makeDjm900Nxs2()};
     return all;
 }
 } // namespace
@@ -120,6 +137,11 @@ bool HardwareMixer::handle(const uint8_t* data, size_t size)
     return false;
 }
 
+bool isUsbInput(MixerInput input)
+{
+    return input == MixerInput::Usb || input == MixerInput::UsbB;
+}
+
 int HardwareMixer::channelForUsbPair(int pair) const
 {
     for (size_t c = 0; c < profile_->channels.size(); ++c)
@@ -128,7 +150,7 @@ int HardwareMixer::channelForUsbPair(int pair) const
     return -1;
 }
 
-const char* mixerInputName(MixerInput input)
+const char* mixerInputName(MixerInput input, bool twoUsbPorts)
 {
     switch (input)
     {
@@ -139,7 +161,11 @@ const char* mixerInputName(MixerInput input)
     case MixerInput::Digital:
         return "DIGITAL";
     case MixerInput::Usb:
-        return "USB";
+        return twoUsbPorts ? "USB A" : "USB";
+    case MixerInput::UsbB:
+        return "USB B";
+    case MixerInput::ReturnAux:
+        return "RETURN AUX";
     case MixerInput::Unknown:
         break;
     }

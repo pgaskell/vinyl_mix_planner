@@ -17,8 +17,14 @@ enum class MixerInput
     Phono,
     Line,
     Digital,
-    Usb
+    Usb,  // the only USB position (DJM-900SRT), or USB A (DJM-900NXS2)
+    UsbB, // the DJM-900NXS2's second USB port
+    ReturnAux
 };
+
+// Whether a channel at `input` plays audio from a computer over USB (which port is ours isn't
+// known: the DJM-900NXS2's two show up alike).
+bool isUsbInput(MixerInput input);
 
 enum class CrossfaderAssign
 {
@@ -47,6 +53,8 @@ struct MixerProfile
     std::vector<Channel> channels;
     std::vector<InputNote> inputs;
     int crossfader;
+    bool twoUsbPorts = false; // the USB position is called USB A
+    bool snapshotKnown = true; // holding START/STOP is known to send every position
 };
 
 // The profile for a device name ("DJM-900SRT"), or nullptr if the mixer isn't known.
@@ -89,6 +97,6 @@ private:
     std::optional<double> crossfader_;
 };
 
-const char* mixerInputName(MixerInput input);
+const char* mixerInputName(MixerInput input, bool twoUsbPorts = false);
 
 } // namespace vmp

@@ -122,3 +122,39 @@ TEST_CASE("Key is found from the notes played")
     REQUIRE(g.key);
     CHECK(g.key->name() == "G");
 }
+
+TEST_CASE("A grid is fitted to the transients from two rough clicks")
+{
+    const double bpm = 123.4, period = 60.0 / bpm;
+    double rate = 0.0;
+    const auto signal = analysisSignal(*makeBeat(bpm, 0.0, 120.0, true), rate);
+    const double beat = 21 * period; // a kick, ten seconds in
+    // Clicks 30-40 ms off: on the next beat, and a bar on.
+    for (const int beats : {1, 4})
+    {
+        INFO(beats << " beats apart");
+        const auto grid = fitBeatGrid(signal, rate, beat + 0.03, beat + beats * period - 0.04);
+        REQUIRE(grid);
+        CHECK(grid->bpm == Approx(bpm).margin(0.01));
+        CHECK(std::abs(grid->firstBeatSeconds - beat) < 0.008);
+    }
+
+    // The downbeat alone, at a known tempo.
+    const auto moved = fitDownbeat(signal, rate, bpm, beat - 0.045);
+    CHECK(moved.bpm == bpm);
+    CHECK(std::abs(moved.firstBeatSeconds - beat) < 0.008);
+
+    CHECK_FALSE(fitBeatGrid(signal, rate, beat, beat + 0.1));
+}
+
+TEST_CASE("A fitted grid keeps the tempo a bar of clicks implies, not double or half")
+{
+    const double bpm = 90.0, period = 60.0 / bpm;
+    double rate = 0.0;
+    const auto signal = analysisSignal(*makeBeat(bpm, 0.2, 90.0, true), rate);
+    const double beat = 0.2 + 20 * period;
+    const auto grid = fitBeatGrid(signal, rate, beat + 0.02, beat + 4 * period + 0.05);
+    REQUIRE(grid);
+    CHECK(grid->bpm == Approx(bpm).margin(0.01));
+    CHECK(fitBeatGrid(std::vector<float>(static_cast<size_t>(60 * rate), 0.0f), rate, 10.0, 10.5) == std::nullopt);
+}

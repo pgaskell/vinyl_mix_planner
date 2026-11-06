@@ -144,7 +144,144 @@ std::vector<float> foldAtPeriod(const std::vector<float>& envelope, double perio
         smoothed[b] = histogram[(b + bins - 1) % bins] + histogram[b] + histogram[(b + 1) % bins];
     return smoothed;
 }
+
+// Onset strength as a function of time, for scoring grids against the music: the kick range
+// counts most, the rest of the spectrum a little (hats alone shouldn't pull a grid off-beat).
+class OnsetCurve
+{
+public:
+    static constexpr size_t kWindow = 512, kHop = 64;
+
+    OnsetCurve(const std::vector<float>& mono, double sampleRate)
+        : frameRate_(sampleRate / kHop), lag_(kOnsetPositionInWindow * kWindow / sampleRate),
+          seconds_(static_cast<double>(mono.size()) / sampleRate)
+    {
+        const auto envelopes = onsetEnvelopes(mono, sampleRate, kWindow, kHop);
+        const auto meanOf = [](const std::vector<float>& v) {
+            return v.empty() ? 0.0 : std::accumulate(v.begin(), v.end(), 0.0) / static_cast<double>(v.size());
+        };
+        const double low = meanOf(envelopes.low), full = meanOf(envelopes.full);
+        std::vector<float> combined(envelopes.full.size(), 0.0f);
+        for (size_t i = 0; i < combined.size(); ++i)
+            combined[i] = static_cast<float>((low > 0.0 ? envelopes.low[i] / low : 0.0) +
+                                             (full > 0.0 ? 0.3 * envelopes.full[i] / full : 0.0));
+        // Smoothed, so a beat a frame off still counts.
+        curve_.resize(combined.size());
+        for (size_t i = 0; i < combined.size(); ++i)
+            curve_[i] = 0.5f * combined[i] + 0.25f * (combined[i > 0 ? i - 1 : i] + combined[std::min(i + 1, combined.size() - 1)]);
+    }
+
+    double seconds() const { return seconds_; }
+
+    double at(double seconds) const
+    {
+        const double f = (seconds - lag_) * frameRate_;
+        if (f < 0.0 || f >= static_cast<double>(curve_.size()) - 1.0)
+            return 0.0;
+        const auto i = static_cast<size_t>(f);
+        const double w = f - static_cast<double>(i);
+        return (1.0 - w) * curve_[i] + w * curve_[i + 1];
+    }
+
+    // Mean strength on the beats of a steady grid between `from` and `to`.
+    double score(double beat, double period, double from, double to) const
+    {
+        double sum = 0.0;
+        int count = 0;
+        for (double k = std::ceil((from - beat) / period); beat + k * period <= to; k += 1.0, ++count)
+            sum += at(beat + k * period);
+        return count > 0 ? sum / count : 0.0;
+    }
+
+    // Mean strength anywhere between `from` and `to`: what a grid scores by chance.
+    double mean(double from, double to) const
+    {
+        double sum = 0.0;
+        int count = 0;
+        for (double t = from; t < to; t += 1.0 / frameRate_, ++count)
+            sum += at(t);
+        return count > 0 ? sum / count : 0.0;
+    }
+
+    // Flux peaks when an onset is about 5/6 of the way into the window (measured on synthetic
+    // kicks; worth re-checking against real records).
+    static constexpr double kOnsetPositionInWindow = 0.83;
+
+private:
+    double frameRate_, lag_, seconds_;
+    std::vector<float> curve_;
+};
+
+// How much better than chance a fitted grid must score to be believed.
+constexpr double kClearBeat = 1.3;
 } // namespace
+
+BeatGrid fitDownbeat(const std::vector<float>& mono, double sampleRate, double bpm, double downbeat)
+{
+    const OnsetCurve onsets(mono, sampleRate);
+    const double period = 60.0 / bpm;
+    const double from = std::max(0.0, downbeat - 20.0), to = std::min(onsets.seconds(), downbeat + 20.0);
+    double best = downbeat, bestScore = 0.0;
+    for (double at = downbeat - kClickReach; at <= downbeat + kClickReach; at += 0.0005)
+        if (const double score = onsets.score(at, period, from, to); score > bestScore)
+        {
+            bestScore = score;
+            best = at;
+        }
+    return BeatGrid{bpm, bestScore > kClearBeat * onsets.mean(from, to) ? best : downbeat};
+}
+
+std::optional<BeatGrid> fitBeatGrid(const std::vector<float>& mono, double sampleRate, double downbeat, double beat)
+{
+    constexpr double kMinBpm = 60.0, kMaxBpm = 200.0, kPreferredBpm = 120.0;
+    const double gap = std::abs(beat - downbeat);
+    if (gap < 0.2)
+        return std::nullopt;
+    const OnsetCurve onsets(mono, sampleRate);
+    const double first = std::min(downbeat, beat), last = std::max(downbeat, beat);
+
+    // Coarse: every tempo that puts a beat within reach of the second click (whichever beat it is),
+    // scored on the half minute around the clicks, weighted towards 120 BPM for the octave.
+    const double reach = kClickReach + 0.04 * gap;
+    double from = std::max(0.0, first - 15.0), to = std::min(onsets.seconds(), last + 15.0);
+    double bestBpm = 0.0, bestBeat = downbeat, bestScore = 0.0;
+    for (int beats = 1; 60.0 * beats / (gap + reach) <= kMaxBpm; ++beats)
+    {
+        const double lowest = std::max(kMinBpm, 60.0 * beats / (gap + reach));
+        const double highest = std::min(kMaxBpm, 60.0 * beats / std::max(gap - reach, 0.05));
+        for (double bpm = lowest; bpm <= highest; bpm *= 1.0002)
+        {
+            const double octaves = std::log2(bpm / kPreferredBpm);
+            const double prior = std::exp(-0.5 * octaves * octaves);
+            for (double at = downbeat - kClickReach; at <= downbeat + kClickReach; at += 0.004)
+                if (const double score = onsets.score(at, 60.0 / bpm, from, to) * prior; score > bestScore)
+                {
+                    bestScore = score;
+                    bestBpm = bpm;
+                    bestBeat = at;
+                }
+        }
+    }
+    if (bestBpm == 0.0)
+        return std::nullopt;
+
+    // Fine: the same, near it, over three minutes, where a small error in tempo adds up.
+    from = std::max(0.0, first - 90.0);
+    to = std::min(onsets.seconds(), last + 90.0);
+    const double coarseBpm = bestBpm, coarseBeat = bestBeat;
+    bestScore = 0.0;
+    for (double bpm = coarseBpm * 0.9995; bpm <= coarseBpm * 1.0005; bpm += coarseBpm * 0.00001)
+        for (double at = coarseBeat - 0.006; at <= coarseBeat + 0.006; at += 0.0005)
+            if (const double score = onsets.score(at, 60.0 / bpm, from, to); score > bestScore)
+            {
+                bestScore = score;
+                bestBpm = bpm;
+                bestBeat = at;
+            }
+    if (bestScore <= kClearBeat * onsets.mean(from, to))
+        return std::nullopt;
+    return BeatGrid{bestBpm, bestBeat};
+}
 
 std::vector<float> analysisSignal(const TrackAudio& audio, double& sampleRate)
 {
@@ -248,10 +385,7 @@ std::optional<BeatGrid> detectBeatGrid(const std::vector<float>& mono, double sa
     const double offset = curvature < 0.0 ? 0.5 * (before - after) / curvature : 0.0;
     const double phaseFrames = (static_cast<double>(peak) + 0.5 + offset) / kPhaseBins * period;
 
-    // Flux peaks when an onset is about 5/6 of the way into the window (measured on synthetic
-    // kicks; worth re-checking against real records).
-    constexpr double kOnsetPositionInWindow = 0.83;
-    const double beatSeconds = (phaseFrames * kHop + kOnsetPositionInWindow * kWindow) / sampleRate;
+    const double beatSeconds = (phaseFrames * kHop + OnsetCurve::kOnsetPositionInWindow * kWindow) / sampleRate;
     const double periodSeconds = 60.0 / bestBpm;
     return BeatGrid{bestBpm, std::fmod(beatSeconds, periodSeconds)};
 }

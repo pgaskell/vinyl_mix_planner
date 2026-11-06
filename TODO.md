@@ -2,6 +2,27 @@
 
 ## Beat grid
 
+- **Beat links and pins, next steps.**
+  - **Done:** Beat pins (`BeatGrid::pins`, Cmd-click/drag a beat line). Beat links: Cmd-drag from
+    one record into another lane; Line Up Beats (M) makes one from the grids. `edit::solveLinks`
+    keeps them with placement, pitch settings (moving the fader at a tempo change) and nudges.
+  - **Hand edits inside a linked stretch** are overruled silently:
+    - A nudge is made up for at the next link.
+    - A pitch change on a follower with two or more links is undone, and its pitch automation is
+      replaced by the links'.
+    - Moving a follower is refused.
+
+    The agreed behaviour was to ask whether to remove the link. Do that at the UI entry points
+    (nudge keys, touches, pitch fader, clip drag).
+  - **Gradual tempo drift** (a live drummer) is kept with steps of the fader and nudges. A linear
+    ride between links would follow it more smoothly; consider it if the steps sound busy.
+  - **Snapping:** snap link ends and dragged pins to the onset under the mouse (the kick), not
+    only to beat lines.
+  - **Lock a whole mix:** link every beat (or every bar) through an overlap from the grids. Then
+    thin the links to the fewest that keep the drift under a few ms (see Tidy up nudges).
+  - **Find pins automatically** where the detected beat phase jumps (a splice) or drifts (a live
+    drummer, wow), proposed for the DJ to accept.
+  - **Pins live in the set, not with the track,** like every grid correction: see the library item.
 - **Bar resets within a track.** Many records are built in 4-bar phrases but slip in an extra bar
   or two (a bridge, a break), after which the downbeat count is off for the rest of the record.
   Let the DJ mark "a new bar 1 starts here" at points in the track: the beats themselves stay on
@@ -22,9 +43,47 @@
   - Feed the DJM's MIDI moves into the same recorder (see "Record mixer moves" below).
   - Tune `kRecordingTolerance` (1% of the range) by eye on real takes.
   - Pitch moves aren't recorded; pitch changes while playing still go through `withFollowers`.
+- **Deck actions: capture everything the DJ does to a record while it plays.** The aim: any move
+  that changes where the record is (nudges, touches, and for digital decks beat jumps, loops, hot
+  cue jumps, reverse, brake) is written when done while playing and editable afterwards, like the
+  mixer automation. Done so far: `Clip::actions` as speed curves on top of the pitch: Nudge from
+  the keys (a set shape: in quickly, then easing off) and Touch measured from the mouse (press a
+  playing record and it follows the hand). Drawn along the bottom of the clip; double-click
+  deletes one; right-click clears them or sets a nudge's peak speed. Still to do:
+  - Winding back: reverse playback in Deck and a warp that can go backwards (also what beat jumps
+    and loops need). Today the hand can only hold the record or push it on.
+  - Edit a curve by hand (drag its points), resize a nudge (`edit::setActionSeconds`).
+  - Thin recorded touches (they keep every UI tick, ~60 a second); thinning the speed curve
+    changes where the music ends up, so thin the position and refit, or correct the offset.
+  - Tune the nudge shape and the 30 ms let-go from measured touches.
+  - **Tidy up nudges** on a selected stretch of time (undoable, never automatic). The usual case:
+    the DJ played the transition, heard the beats drift apart late and corrected late, maybe the
+    wrong way first. Rework the nudges and touches in the selection into fewer, earlier ones that
+    end with the music in the same place:
+    - Earlier: move the correction towards the start of the selection, before the drift was heard,
+      making up for the DJ's reaction time; ideally where the drift starts, so it never shows.
+    - Cancel out: a nudge the wrong way followed by corrections the other way (push, push, drag,
+      drag, hold) becomes the one net move, or nothing if they cancel.
+    - Merge: several small nudges the same way close together become one.
+    - Hide: within that, prefer where it's least noticeable, e.g. a breakdown, a quiet stretch, or
+      under the other record while it's louder; and keep it off the beats the ear locks onto.
+    - Keep the alignment: it has to leave the two records' beats at least as close as before
+      through the selection, not just the end position. Check against both beat grids; flag where
+      it can't (a drift that needs a pitch change, not a nudge).
+    - Needs a time selection on the timeline first; show the before and after (ghosted) before
+      applying.
+  - Override (practice) mode doesn't apply: actions are always written. Hearing one without
+    writing it needs a live offset in the engine.
+  - Nudges and touches from a hardware platter or jog over MIDI, into the same lane.
+  - Pitch fader and pitch bend moves recorded as a pass, like `writeRecordedPass`.
 
 ## Mixer and decks UI
 
+- **Undoable zooms.** Zooming (and the zoom-to commands) should be easy to step back from. View
+  changes aren't set edits, so they shouldn't go through `SetDocument` or mark the set unsaved:
+  a separate view history (zoom and scroll position), stepped back with Cmd+Z only when the last
+  thing done was a zoom, or with its own keys (back/forward, like a browser). Decide which; merging
+  a burst of scroll-wheel zooms into one step either way.
 - **Trim, next steps.** Trim is in (per clip, follows the DJM's TRIM knobs). The basic mixer maps
   the knob to -20..-4 dB, -12 dB at the centre, so faders can sit fully up (as most Pioneer DJs
   play) without the internal mix clipping.
@@ -63,6 +122,16 @@
   - Filters for mixing: tracks within a BPM range of the selected track, or in a compatible key.
   - Cope with files that move or go missing (relink).
 
+## Rebuilding a recorded mix
+
+- **Lay out a set from a recording of it.** Given a recorded mix and the vinyl rips (or the same
+  tracks) that went into it, place each track on the timeline where it plays in the recording,
+  roughly: the DJ will beat-match it again anyway. Find each track by cross-correlating its audio
+  (or its spectral flux / chroma) against the recording over a range of speeds; the best-matching
+  speed is the pitch it was played at (resampling: tempo and key move together, so one ratio
+  explains both). Alternate the decks for overlapping tracks. Hard parts: EQ and filters in the
+  transitions, and records that are only heard for a few bars.
+
 ## Cueing
 
 - **The cuehead: a second position for preparing ahead.** Independent of the playhead and usually
@@ -75,6 +144,21 @@
   - Edits locked just ahead of the playhead.
   - A choice of what it plays: just the incoming deck, or the whole mix at that point.
 
+## Digital decks (vinyl mode stays)
+
+- **A deck model per set, like the mixer model.** Vinyl (today: 1200 MK2) stays the default and
+  is never watered down. A digital model (CDJ/controller-like) lifts its limits; the set says
+  which it's planned for, and switching a set from digital back to vinyl lists, as issues, what
+  the turntables can't do. Engine and bounce run the same code for both.
+  - What vinyl enforces that digital would relax: pitch range (±8%, then ±16/50%), resampling only
+    (key lock needs a time-stretcher: Signalsmith Stretch is MIT; Rubber Band is GPL, fine with
+    AGPL), record changeover time, one copy of a record per deck at a time, motor start/stop.
+  - Digital features, roughly by value: key lock (master tempo); sync / tempo match to a deck;
+    hot cues and loops (on the clip, anchored to source frames like keypoints); beat jump; quantised
+    nudges and cue points; instant start; reverse. Each one is a clip feature the timeline can draw
+    and the validator can flag in vinyl mode.
+  - Open: whether "vinyl" is per set or per deck (a hybrid setup: two 1200s and a CDJ).
+
 ## Already planned
 
 - DJM-900NXS2 emulation: isolator curves and the Color FX (Space, Dub Echo, Sweep, Filter),
@@ -86,7 +170,13 @@
   - Arm recording; start from the mixer's state (snapshot: hold START/STOP), place each move at the
     playhead minus the output latency, replace the keypoints a gesture covers, then thin them.
   - Fader, trim, HI/MID/LOW and COLOR are in the model now; the crossfader isn't.
-  - A DJM-900NXS2 profile: run the MIDI probe on it for its map.
+  - DJM-900NXS2 profile (from its List of MIDI messages v1.00; same CCs as the SRT, plus USB B and
+    RETURN AUX selector positions). Works on a real one (tried briefly, 2026-11-05). Still open:
+    - Whether holding START/STOP sends a snapshot (`snapshotKnown` is false until then).
+    - USB pair n plays on channel n with the selector at the port's letter (A or B), and which
+      port this Mac is on: can the app tell? Then a channel on the other letter is a warning.
+    - Its sound color FX buttons (CC 0x69 SPACE, 0x6B DUB ECHO, 0x6A SWEEP, 0x57 FILTER, 0x55
+      NOISE, 0x56 CRUSH) aren't followed yet: needed with the FX type selector.
 - Record what the mixer sends back over USB (MIX/REC OUT or post-fader channels, chosen in the
   DJM Setup app) as a reference take on the timeline, to compare with the internal mix and check
   the emulation. Needs the input channels opened (the microphone permission is declared).
